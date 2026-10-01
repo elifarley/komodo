@@ -1,7 +1,7 @@
 # Design: Fix OIDC login losing the exchanged JWT (moghtech/komodo#1665)
 
 - Date: 2026-10-01
-- Status: draft — post-roast round 3 (round 1: `…/1459.speckomodo1665jwtredeemrace.roast.md`, 15 findings applied; round 2: `…/1700.speckomodo1665jwtredeemracer2.roast.md`, 14 findings applied; round 3: `…/1745.speckomodo1665jwtredeemracer3.roast.md`, all findings applied — including two corrections of this spec's own earlier claims: the `pending` dispatch is unconditional, and mogh_ui's login page does NOT auto-redirect on token appearance)
+- Status: draft — post-roast round 4 (round 1: `…/1459…roast.md`, 15 findings; round 2: `…/1700…roast.md`, 14; round 3: `…/1745…roast.md`, all applied incl. two self-corrections; round 4: `…/1823…roast.md`, all applied — the round-4 critical was a semantics bug in round 3's own gate definition, fixed by giving `idle` one meaning everywhere)
 - Intent: [docs/superpowers/intents/2026-10-01-komodo-oidc-login-jwt-redeem-race-fix-1665-intent.md](../intents/2026-10-01-komodo-oidc-login-jwt-redeem-race-fix-1665-intent.md) — the intent's proposed-outcome sketch (one-shot invalidate on token-store change) is superseded by this spec's §7 posture; its problem statement and constraints stand.
 - Issue: [moghtech/komodo#1665](https://github.com/moghtech/komodo/issues/1665) · Related: moghtech/komodo#1506, moghtech/komodo#1375, moghtech/komodo#959
 - Scope: moghtech/komodo only (`ui/src`, `compose/`, docs). Dependencies `mogh_ui@1.2.7` / `mogh_auth_client@1.7.1` stay pinned.
@@ -57,12 +57,12 @@ proxy IP (mitigated upstream-side only by `auth_rate_limit_disabled`).
 | `ui/src/main.tsx:33-43` | `WebsocketProvider` wraps `<Router />` — it mounts on every page load, **outside** the router's redeem gate. `ui/src/lib/socket.tsx:58` mounts `useUser()` and `:63` `useRead("GetCoreInfo", {})` from inside it. |
 | `ui/src/router.tsx:47-51` | `useAuthState().jwt_redeem_ready` (truthy when URL has `?redeem_ready=true`) → `LoadingScreen`. Non-reactive: read from `location.search` at render; the eventual `location.replace` reload is what clears it. mogh_ui fires `redeemJwt({})` **inside `useAuthState`'s body during Router's render** (mogh_ui dist `auth/index.js:102-105`). |
 | `ui/src/router.tsx:142-148` | `RequireAuth`: `!MoghAuth.LOGIN_TOKENS.jwt() || error` → navigate `/login?backto=…`. |
-| `ui/src/lib/hooks.ts:41-46` | `komodo_client()` attaches `authorization` only when `LOGIN_TOKENS.jwt()` is non-empty at construction. Every `useRead`/`useUser` **call site mounted outside the app tree** gates `enabled: !!LOGIN_TOKENS.jwt()` **evaluated at render** — but `useRead` spreads `...config` **after** computing `enabled` (`hooks.ts:99-104`), so callers passing an explicit `enabled` override the jwt gate wholesale (9+ such call sites repo-wide; none mounted during the redeem window — latent, see §7.6). `useUser` also polls (`hooks.ts:57`, `refetchInterval: 30_000`) and refetches on focus. |
-| mogh_ui 1.2.7 `auth/index.js` | `useAuthState`: module-level `jwt_redeem_sent` guard; on `redeem_ready` fires `ExchangeForJwt` once. `onSuccess`: `LOGIN_TOKENS.add_and_change(jwt)` → `sanitizeQueryInner(search)` → **full-page `location.replace`** reload. `onError`: in-memory Mantine notification only — **no state change, no fallback**: `jwt_redeem_ready` stays true → eternal `LoadingScreen`. `useLoginOptions` has no `enabled` gate — the login page fires `GetLoginOptions` unauthenticated on every mount (`auth/login/index.js:31`). |
+| `ui/src/lib/hooks.ts:41-46` | `komodo_client()` attaches `authorization` only when `LOGIN_TOKENS.jwt()` is non-empty at construction. Every `useRead`/`useUser` **call site mounted outside the app tree** gates `enabled: !!LOGIN_TOKENS.jwt()` **evaluated at render** — but `useRead` spreads `...config` **after** computing `enabled` (`hooks.ts:99-104`), so callers passing an explicit `enabled` override the jwt gate wholesale (46 such call sites; census command in §7.6; none mounted during the redeem window — latent). `useUser` also polls (`hooks.ts:57`, `refetchInterval: 30_000`) and refetches on focus. |
+| mogh_ui 1.2.7 `auth/index.js` | `useAuthState`: module-level `jwt_redeem_sent` guard; on `redeem_ready` fires `ExchangeForJwt` once. `onSuccess`: `LOGIN_TOKENS.add_and_change(jwt)` → `sanitizeQueryInner(search)` → **full-page `location.replace`** reload. `onError`: in-memory Mantine notification only — **no state change, no fallback**: `jwt_redeem_ready` stays true → eternal `LoadingScreen`. `useLoginOptions` has no `enabled` gate — the login page fires `GetLoginOptions` unauthenticated on every mount (`auth/login/index.js:34`). |
 | mogh_ui 1.2.7 `auth/login/index.js` | **No auto-redirect on token appearance**: `maybeNavigate` (`location.replace(backto ?? "/")`, `:49-52`) is invoked only from a *user-initiated* login's `onSuccess` (`:55`); `alreadyLoggedIn` (`:40`) renders only a manual `BackButton` (`:164,:185`). A token landing while the login page is mounted leaves the user on the login form. |
 | mogh_ui 1.2.7 `auth/utils.js` | `sanitizeQuery`/`sanitizeQueryInner` strip `redeem_ready`/`totp`/`passkey` then `location.replace(...)` — **cross-document navigation**, not a URL tidy-up. |
 | mogh_auth_client 1.7.1 `tokens.js` | `LOGIN_TOKENS` is a module-load IIFE: one `localStorage.getItem` at import, `jwt()` reads memory only, **no storage-event re-sync**. `add_and_change` **silently drops** the token when `jwtDecode(jwt).sub` is falsy (`if (!user_id) return;`). `remove_all` exists. |
-| `@tanstack/query-core@5.102.4` `mutation.cjs` + `notifyManager.cjs` + `queryObserver.cjs` | Execute ordering: cache-config `onMutate` (synchronous, **every** execute) → an **unconditional** `#dispatch({type:"pending"})` (non-restored path; a second, context-conditional one follows) → `retryer.start()` → cache-config `onSuccess` → **mutation `options.onSuccess`** (mogh_ui's write+reload) → `onSettled` ×2 → **then** `#dispatch({type:"success"})`; the catch path dispatches `{type:"error"}` after `options.onError` — and **only `config.onError` is individually try/catch-wrapped**: a throw from komodo's config `onSuccess` skips mogh_ui's handler and routes a *successful* exchange into the error path. Every dispatch notifies via `notifyManager.batch` → **`systemSetTimeoutZero`** — a macrotask — so a render-phase-fired mutation's notifications can land before React's passive effects commit any effect-scoped subscriber. Cache listeners receive `{type:"updated", action, mutation}`. Separately, `queryObserver.cjs:163-164`: the refetch-interval callback checks only `refetchIntervalInBackground || focusManager.isFocused()` — **no `enabled` check at fire time**; `enabled` is consulted only when the timer is (re)scheduled, with the observer's last-render options. A `MutationCache` **config** hook (`new MutationCache({ onMutate, onSuccess })` — komodo owns this object in `main.tsx`) runs synchronously inside `execute`, before mogh_ui's handlers. |
+| `@tanstack/query-core@5.102.4` `mutation.cjs` + `notifyManager.cjs` + `queryObserver.cjs` | Execute ordering: cache-config `onMutate` (synchronous, **every** execute) → an **unconditional** `#dispatch({type:"pending"})` (non-restored path; a second, context-conditional one follows) → `retryer.start()` → cache-config `onSuccess` → **mutation `options.onSuccess`** (mogh_ui's write+reload) → `onSettled` ×2 → **then** `#dispatch({type:"success"})`. **None of the success-path hooks are wrapped** — a throw from komodo's config `onSuccess` skips mogh_ui's handler and routes a *successful* exchange into the error path; on the error path, by contrast, all four hooks (`config.onError`, `options.onError`, `config.onSettled`, `options.onSettled`) are individually try/catch-guarded before the `{type:"error"}` dispatch. Every dispatch notifies via `notifyManager.batch` → **`systemSetTimeoutZero`** — a macrotask — so a render-phase-fired mutation's notifications can land before React's passive effects commit any effect-scoped subscriber. Cache listeners receive `{type:"updated", action, mutation}`. Separately, `queryObserver.cjs:163-164`: the refetch-interval callback checks only `refetchIntervalInBackground || focusManager.isFocused()` — **no `enabled` check at fire time**; `enabled` is consulted only when the timer is (re)scheduled, with the observer's last-render options. A `MutationCache` **config** hook (`new MutationCache({ onMutate, onSuccess })` — komodo owns this object in `main.tsx`) runs synchronously inside `execute`, before mogh_ui's handlers. |
 | `bin/core` | Auth rate limiter: `GENERAL_RATE_LIMITER` etc. keyed by IP as seen by core (`with_failure_rate_limit_using_ip`: `api/listener/router.rs:242`, `api/ws/mod.rs:78` — note the **ws route is limiter-covered too**); behind a proxy that is the proxy IP for everyone. `oidc_auto_redirect` (default false, `config/core.config.toml:294`, wired `bin/core/src/auth/mod.rs:365`) can itself produce a redirect loop — see M6. |
 
 ## 5. Root-cause landscape (what the harness must discriminate)
@@ -132,17 +132,24 @@ Instrumentation & assertions (`compose/oidc-dev/verify.mjs`, headless chromium):
   deferral would be undecidable — the scenario is mandatory, not optional.
 - Capture per-request: URL, `authorization` header present (yes/no), status, timestamp
   (from Caddy JSON access log + browser console shim that logs `LOGIN_TOKENS` state transitions).
-- **Request bound, defined precisely**: the window is `[callback 303 → dashboard rendered]`,
-  where **dashboard rendered** = the dashboard route (`/`) mounted AND `useUser`'s `["GetUser"]`
-  query resolved successfully — the same condition `RequireAuth` needs to paint real content
-  (a concrete DOM marker in `ui/src/pages/dashboard/` may replace this at implementation if
-  one is cheaper to assert). Count **app-originated requests that are unauthenticated OR
-  receive 401/403** — the quantity the per-IP limiter actually consumes is *failed attempts*,
-  and a stale-token request carries a (doomed) `authorization` header, so a header-less-only
-  count cannot see the M1 storm this bound exists to prevent. Assert a window **total** ≤ 4
-  **and** a sliding-window **max ≤ 4 per any 15 s** (the limiter's default window; a fifth
-  failed attempt trips it — `config/core.config.toml:346-351`). Keep the header-less count as
-  a secondary metric.
+- **Request bound, defined precisely**: on **success rows** the window is
+  `[callback 303 → dashboard rendered]`, where **dashboard rendered** = the dashboard route
+  (`/`) mounted AND `useUser`'s `["GetUser"]` query resolved successfully — the same
+  condition `RequireAuth` needs to paint real content (a concrete DOM marker in
+  `ui/src/pages/dashboard/` may replace this at implementation if one is cheaper to assert).
+  **Failure arms never render the dashboard, so the ≤ 4 window bound is scoped to success
+  rows only**; failure rows are owned by the zero-residual assertion below (window:
+  settlement + 60 s). Count **app-originated requests that are unauthenticated OR receive
+  401/403** — the quantity the per-IP limiter actually consumes is *failed attempts*, and a
+  stale-token request carries a (doomed) `authorization` header, so a header-less-only count
+  cannot see the M1 storm this bound exists to prevent. On success rows assert a window
+  **total** ≤ 4 **and** a sliding-window **max ≤ 4 per any 15 s** (the limiter's default
+  window; a fifth failed attempt trips it — `config/core.config.toml:346-351`). Keep the
+  header-less count as a secondary metric.
+- **Websocket-alive assertion (success rows)**: the update websocket — established at
+  exactly one site (`ui/src/lib/socket.tsx:80`) and driving every live invalidation — must
+  reach connected state within 5 s of dashboard rendered. Without this, a regression that
+  silently kills the app's realtime layer ships green.
 - Assert the *failure* reproduces pre-fix (at least one of M1/M3/M4/M5/M6 observed), and
   post-fix: ≥1 authenticated (`authorization`-bearing) app request within 3 s of exchange 200;
   final app state = dashboard rendered (definition above).
@@ -191,11 +198,12 @@ on observing a `pending` **event**:
   mogh_ui's handlers, before any scheduler — so arming cannot lose a race with React:
   - `onMutate(variables, mutation)`: if `mutation.options.mutationKey?.[0] === "ExchangeForJwt"`
     (mogh_ui's `useLogin` sets that key) → `redeemState = "pending"` + arm the watchdog.
-  - `onSuccess(data, variables, context, mutation)`: same filter; persist the exchange result
-    to `sessionStorage` under `komodo-redeem-ok` (M2/M3 evidence, §7.3/§7.4; the response
-    shape is `{ jwt: string }` — mogh_ui dist `auth/index.js:78` destructures `({ jwt })`).
-    This hook runs **before** mogh_ui's handler, i.e. before the token write and the reload
-    initiation. §7.4's M3 evidence and this flag are the same write — one storage sink.
+  - `onSuccess(data, variables, context, mutation)`: same filter; write
+    `sessionStorage["komodo-redeem"] = {t, phase: "ok"}` (the single evidence flag, §7.3's
+    storage contract — the response shape is `{ jwt: string }`, mogh_ui dist
+    `auth/index.js:78`, but the jwt itself is never persisted). This hook runs **before**
+    mogh_ui's handler, i.e. before the token write and the reload initiation. §7.4's M3
+    evidence and this flag are the same write — one storage sink.
   - **Exception-free rule (hard requirement)**: every body installed into the `MutationCache`
     config is fully wrapped in try/catch and **never rethrows**. The pinned `mutation.cjs`
     awaits config `onSuccess` *before* mogh_ui's token write with no per-hook guard (only
@@ -226,10 +234,17 @@ on observing a `pending` **event**:
   for the page's lifetime — post-settlement dispatches stay observed (a late error after a
   watchdog timeout still surfaces the §7.2 notification path). The watchdog timer is
   `clearTimeout`'d on any settlement; nothing else tears down.
-- **Public API**: `redeemState` (read via `useSyncExternalStore`), `useRedeemSettled()`
-  (boolean: `redeemState !== "idle"` — the re-render source §7.5 keys on), and
-  `initRedeemGate(queryClient)`. No polling, no storage listeners, no `notifyTokenChanged`
-  surface — none has a consumer.
+- **Public API — one predicate, one meaning of `idle`**: `redeemState` (read via
+  `useSyncExternalStore`), **`useRedeemGateOpen()`** (boolean: `redeemState !== "pending"`),
+  and `initRedeemGate(queryClient)`. `idle` means **open everywhere**: the router's
+  LoadingScreen shows only while `pending`, and the §7.5 read/connect gates are closed only
+  while `pending` — on any document that never runs a redeem mutation (every direct page
+  load, every post-reload document) the state stays `idle` and every gate behaves exactly
+  as today. A previous draft's `useRedeemSettled() = redeemState !== "idle"` made `idle`
+  mean *closed* on the read side and *open* on the router side — permanently disabling the
+  provider reads and the update websocket on normal loads (round-4 critical, fixed here).
+  The only closed window is `pending`, bounded by the watchdog. No polling, no storage
+  listeners, no `notifyTokenChanged` surface — none has a consumer.
 
 ### 7.2 `ui/src/router.tsx`
 
@@ -271,13 +286,19 @@ declares no `jwt-decode`, and importing the transitive package would be undeclar
 whole read is wrapped in `try/catch`: a corrupt stored value must **not** throw inside the
 cache notify cycle — on parse failure log the raw value to console, mark detection
 unavailable, and skip (degradation, not crash). If the exchange carried a jwt but no matching
-entry landed, set `sessionStorage["komodo-redeem-drop"]` — guarded by a feature check: when
-`sessionStorage` is unavailable (storage blocked / quota), degrade to a console-only signal
-and note it in the §8 row. The flag (when writable) survives the reload; the fresh page's
-login page reads it, surfaces "Login succeeded but the session could not be stored on this
-device", logs the raw evidence to console, and clears the flag. This is detection +
-user-visible delta + upstream-issue evidence — the drop itself is upstream-owned
-(`add_and_change`'s silent early-return).
+entry landed, upgrade the §7.1 flag to `{t, phase: "drop"}`.
+
+**Storage contract (single sink, no credentials)**: one `sessionStorage` key,
+`komodo-redeem`, holding `{t: number, phase: "ok" | "drop"}` — **never the raw jwt** (a
+persisted token copy would outlive `remove_all` and duplicate the credential the design
+works to contain; the M2 comparison needs the jwt only in-memory, in the same task). Writes
+follow the §7.1 exception-free rule + feature-check: when `sessionStorage` is unavailable,
+degrade to console-only signals. The flag exists to carry evidence across the reload and is
+consumed by exactly two readers — the §7.7 redirect (accepts only `phase: "ok"` **fresh**:
+`Date.now() - t < 15_000` — just over the watchdog) and the §7.3 drop message (accepts
+`phase: "drop"`) — and **both readers clear it on read**. Loop-safety rests on the TTL +
+clear-on-read, not on any "exists only this page-load cycle" claim (a previous draft's
+premise, which its own persistence requirement contradicted).
 
 ### 7.4 M3 contingency — stated, not built
 
@@ -296,47 +317,66 @@ follows §7.3's feature-check + degradation pattern and §7.1's exception-free r
 the one hook guaranteed to run on the success path in every deployment, so a throw there
 would break login for exactly the M3-affected population.
 
-### 7.5 Provider-subtree reads behind settlement (unconditional — M1 surface AND the §7.2 poller control)
+### 7.5 Provider-subtree reads behind the pending window (unconditional — M1 surface AND the §7.2 poller control)
 
 `WebsocketProvider` mounts outside `Router` and mounts **three** things
 (`ui/src/lib/socket.tsx`): `useUser()` at `:58` (30 s poll + focus refetch), the
-`GetCoreInfo` read at `:63`, and the connect effect at `:75-102`. All three are deferred
-behind settlement **unconditionally** — not gated on the harness confirming M1, because the
-deferral is cheap, is the only mechanism that actually stops the stale-token 401 feed (M1's
-harm), and is what makes §7.2's settled-failed path meet the zero-residual assertion
-(`remove_all` is hygiene; the `enabled` recomputation on the `useRedeemSettled()`-driven
-re-render is the poller control). Mechanics: `socket.tsx` calls `useRedeemSettled()` and
-gates each read via `enabled` — `enabled: redeemSettled && hasJwt` for the reads it passes
-config to (`GetCoreInfo` via `useRead`'s config; **`useUser` gains an optional config
-parameter** extending its signature, `enabled` composed after any caller config). The
-provider component itself stays mounted (main.tsx untouched). **No early-return guards**:
-an early return before the `useQuery` calls — in the provider or in `useUser` — changes the
-number of hooks between renders exactly when the gate transitions, and React throws
-"Rendered fewer hooks than expected"; the `enabled`-config route is the only sanctioned one.
+`GetCoreInfo` read at `:63`, and the connect effect at `:75-102` — the **sole** websocket
+establishment site in `ui/src` (`get_update_websocket`, `:80`; grep: one hit), so gating it
+wrong kills the app's realtime layer. All three are gated by §7.1's
+**`useRedeemGateOpen()`** (`redeemState !== "pending"`), composed with `hasJwt`:
+
+- reads: `enabled: gateOpen && hasJwt` (`GetCoreInfo` via `useRead`'s config; **`useUser`
+  gains an optional config parameter** extending its signature, `enabled` composed after any
+  caller config);
+- the connect effect additionally requires `gateOpen` before its first connect.
+
+Because `idle` means **open** (§7.1), every document that never runs a redeem behaves
+exactly as today — reads live, websocket connects. The closed window is only `pending`
+(≤ 12 s by the watchdog), which covers M1's stale-token storm; and on settled-failed the
+§7.2 `remove_all` makes `hasJwt` false while the gate-state flip re-renders `socket.tsx`,
+recomputing `enabled` to false before the next 30 s tick — that re-render **is** the poller
+stop (`remove_all` alone cannot stop an already-scheduled interval). No early-return
+guards: an early return before the `useQuery` calls changes the number of hooks between
+renders exactly when the gate transitions, and React throws "Rendered fewer hooks than
+expected"; the `enabled`-config route is the only sanctioned one. The provider component
+itself stays mounted (main.tsx untouched).
 
 ### 7.6 Drive-by: `useRead`'s config spread defeats the jwt gate
 
 `hooks.ts:99-104` computes `enabled: hasJwt && config?.enabled !== false` and then spreads
 `...config` after it, so **any caller whose config object contains an `enabled` key —
 including explicitly `undefined`** (object spread copies `undefined` over the computed key,
-as `useAllResources`'s pass-through does) replaces the jwt gate wholesale. Census
-(2026-10-01 grep): 18 explicit-`enabled` `useRead` config sites (inspect-section, export-toml,
-swarm/link, log-section, omni-search/hooks, permissions/base-section, updates/resource) plus
-the `useAllResources` pass-through; none mounted during the redeem window today — latent.
-One-line fix: spread `...config` first, then compute `enabled`, so the gate composes with
-caller intent instead of being overridden by it. In scope because this fix's whole subject is
-credential-less request prevention; flagged in the PR as a drive-by so reviewers see it.
+as `useAllResources`'s pass-through does) replaces the jwt gate wholesale. Census — ship the
+command, not a frozen number:
+
+```sh
+rg -U 'useRead\([^;]{0,400}?\{[^;]{0,400}?enabled:' ui/src --count-matches
+```
+
+Count at census time (2026-10-01): **46** sites (swarm/link 6, server/index 5, export-toml 3,
+omni-search/hooks 3, log-section 2, permissions/base-section 2, plus ~25 single sites across
+resources/deployment, resources/server/stats, dashboard/recents, topbar/user-dropdown, and
+others) + the `useAllResources` pass-through; none mounted during the redeem window today —
+latent. One-line fix: spread `...config` first, then compute `enabled`, so the gate composes
+with caller intent instead of being overridden by it. In scope because this fix's whole
+subject is credential-less request prevention; flagged in the PR as a drive-by so reviewers
+see it.
 
 ### 7.7 Late-success landing: one-shot redirect on the login page
 
 A watchdog timeout followed by a late exchange success strands the user on `/login` (mogh_ui
-does not auto-redirect on token appearance — §4). Komodo owns `ui/src/pages/login/index.tsx`,
-so the fix is komodo-side: when the login page mounts, if a **valid-shaped jwt is present**
-and the §7.1 `komodo-redeem-ok` flag is set, navigate once to `backto ?? "/"` and clear the
-flag. Loop-safety: the flag exists only in the tab where an exchange actually 200'd this
-page-load cycle — a stale-token visit to `/login` (flag absent) behaves exactly as today.
-This closes the watchdog's one UX cost: a slow-but-successful login lands on the pre-login
-URL instead of a login form with a Back button.
+does not auto-redirect on token appearance — §4). Komodo owns `ui/src/pages/login.tsx`, so
+the fix is komodo-side: when the login page mounts, read `komodo-redeem` (§7.3's storage
+contract) and, if it is `{phase: "ok"}`, **fresh** (`Date.now() - t < 15_000` — just over
+the watchdog), AND a jwt is present in the `mogh-auth-tokens-v1` store (decode-free: the
+§7.3 string-presence check — no `sub`, no expiry decode; a token issued by an exchange
+< 15 s ago is not expired), navigate once to `backto ?? "/"` and clear the flag.
+Loop-safety rests on the TTL + clear-on-read (§7.3), not on flag ephemerality: a flag older
+than 15 s is ignored, and either reader consumes it once. A deliberate `/login` visit
+without a fresh successful exchange behaves exactly as today. This closes the watchdog's
+one UX cost: a slow-but-successful login lands on the pre-login URL instead of a login form
+with a Back button.
 
 ## 8. Error handling matrix
 
@@ -384,6 +424,10 @@ URL instead of a login form with a Back button.
   the upstream report alongside the lib's missing storage re-sync.
 - **M3 outcome**: if confirmed, this PR ships without a fix for the loop itself (§7.4) —
   called out in the PR body so reviewers don't mistake scope for oversight.
+- **Background-tab watchdog delay**: browser timer throttling (Chrome clamps background
+  timers to ~1/min) can delay the 12 s watchdog for a user who switches away mid-redeem;
+  they see an extended spinner, then the settled-failed path. Acceptable; a late success in
+  that state is covered by §7.7's TTL window.
 - **PR hygiene**: `docs/superpowers/**` (this spec + intent) are workflow artifacts — they
   must not ride in the upstream PR. The cv-plan-pr step rebases code commits onto a clean
   branch (or drops the docs commits) before pushing.
@@ -399,10 +443,11 @@ URL instead of a login form with a Back button.
       (`KOMODO_OIDC_AUTO_REDIRECT=false` pinned; latency ≤ 8 s under the watchdog).
 - [ ] Post-fix: authenticated app-originated follow-ups on the wire within 3 s of exchange
       200; UI lands on dashboard (§6 definition); redeem-window unauthenticated-or-401/403
-      bound met (window total ≤ 4, sliding 15 s max ≤ 4); zero unauthenticated-or-401/403 app
-      requests and zero failed ws handshakes in the 60 s after a settled-failure, **under the
-      §6 exclusion list** (auth-surface discovery calls exempt); no rate-limiter lockout at
-      defaults.
+      bound met on success rows (window total ≤ 4, sliding 15 s max ≤ 4); zero
+      unauthenticated-or-401/403 app requests and zero failed ws handshakes in the 60 s after
+      a settled-failure, **under the §6 exclusion list** (auth-surface discovery calls
+      exempt); **update websocket connected within 5 s of dashboard render on success rows**;
+      no rate-limiter lockout at defaults.
 - [ ] Watchdog arming is deterministic (module-scope `MutationCache` config `onMutate`, not an
       effect-raced subscription): a hung-exchange harness row converges via settled-failed in
       every run, not probabilistically — and the **late-success variant** of that row lands
