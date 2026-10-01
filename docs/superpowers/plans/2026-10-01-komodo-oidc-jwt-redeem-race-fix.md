@@ -131,7 +131,7 @@ oidc_auto_redirect = false
 jwt_secret = "oidc-dev-jwt-secret-not-for-production"
 ```
 
-- [ ] **Step 6: Write `compose/oidc-dev/README.md`** — run instructions (the `docker compose` line from the yaml header), the digest-pinning step, and the pin: `node-oidc-provider` version `11.10.1` (the version this harness's mock is written against; bump only with a re-run of the full suite).
+- [ ] **Step 6: Write `compose/oidc-dev/README.md`** — run instructions (the `docker compose` line from the yaml header), the digest-pinning step, and the pin: `node-oidc-provider` version `11.10.1` (the version this harness's mock is written against; bump only with a re-run of the full suite). Include the cookie caveat: the mock sets its session cookie on the parent domain `oidctest.localhost` (required for forward_auth to see it); if a test browser rejects `Domain=` attributes under `.localhost` (PSL edge), switch the harness hosts to a `*.oidctest.test` style name + `/etc/hosts` entries rather than dropping the domain.
 
 - [ ] **Step 7: Boot and verify**
 
@@ -186,6 +186,12 @@ import http from "node:http";
 const issuer = process.env.MOCK_ISSUER ?? "https://portal.oidctest.localhost";
 
 const provider = new Provider(issuer, {
+  // Session cookie MUST be a parent-domain cookie (C-001): host-only for
+  // portal.oidctest.localhost would never reach komodo.oidctest.localhost, so
+  // Caddy's forward_auth subrequest would 401 EVERY komodo request, including
+  // /auth/oidc/callback — no login could ever complete. This mirrors Authelia,
+  // which sets its cookie on the shared parent domain.
+  cookies: { long: { domain: "oidctest.localhost" } },
   clients: [
     {
       client_id: "komodo-harness",
@@ -231,10 +237,21 @@ http
   .createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", issuer);
     if (url.pathname === "/verify") {
+      // Honest failures (C-011): lookup ERROR is 503 (provider/API problem),
+      // absence of session is 401. Caddy's access log then discriminates them.
+      // NOTE: verify provider.Session.get's expected argument shape against the
+      // pinned v11 docs BEFORE relying on it — oidc-provider documents Koa
+      // contexts; if the raw IncomingMessage shape fails, mount /verify through
+      // the provider's Koa app instead of a bare http handler.
+      let session;
       try {
-        const session = await provider.Session.get(req);
-        if (session && (await session.userId())) return res.writeHead(200).end("ok");
-      } catch { /* fallthrough */ }
+        session = await provider.Session.get(req);
+      } catch (e) {
+        console.error("verify: session lookup failed", e);
+        return res.writeHead(503).end("lookup error");
+      }
+      if (session && (await session.userId())) return res.writeHead(200).end("ok");
+      console.warn("verify: no session for request");
       return res.writeHead(401).end("unauthorized");
     }
     provider.callback(req, res);
@@ -282,10 +299,11 @@ CMD ["yarn", "start"]
 - Modify: `compose/oidc-dev/core-config.toml` (enable OIDC)
 
 **Acceptance Criteria:**
-- [ ] `curl -sk -o /dev/null -w '%{http_code}' https://komodo.oidctest.localhost` → `401`-or-redirect-to-portal without a session (forward_auth active)
-- [ ] After a portal login, `https://komodo.oidctest.localhost` reaches the Komodo UI
+- [ ] `caddy validate` passes: `docker compose run --rm --entrypoint caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile`
+- [ ] Without a session, `https://komodo.oidctest.localhost` → **redirect to the portal** (a bare 401 FAILS this AC — C-001: it would mean the forward-auth gate is misconfigured, not "protecting")
+- [ ] After a portal login, `https://komodo.oidctest.localhost` reaches the Komodo UI (this proves the mock's session cookie actually reaches the komodo host — parent-domain cookie works)
 - [ ] `compose/oidc-dev/access.log` contains JSON entries with `request.headers` keys
-- [ ] Manual OIDC login ends at `/?redeem_ready=true` → Komodo UI (or the reported login-modal loop — either is a correct baseline)
+- [ ] Manual OIDC login ends at `/?redeem_ready=true` → Komodo UI. If it instead loops, check the access log FIRST for 503s on `/verify` (a lookup error must not be recorded as a reproduced M3)
 
 **Verify:** the curls + `tail -1 compose/oidc-dev/access.log | python3 -m json.tool | head`.
 
@@ -355,9 +373,9 @@ Validate the Caddyfile as a Task 3 acceptance step: `docker compose run --rm --e
 
 ```yaml
   delay:
-    build:
-      context: ..
-      dockerfile: compose/oidc-dev/oidc-mock/Dockerfile
+    # No build at all: delay.mjs imports only node:http (C-015 — reusing the
+    # mock Dockerfile here fails: its COPY paths assume context ./oidc-dev).
+    image: node:22.12-alpine
     command: ["node", "/app/delay.mjs"]
     volumes:
       - ./oidc-dev/delay.mjs:/app/delay.mjs:ro
@@ -422,12 +440,15 @@ const OUT = new URL("./out/", import.meta.url).pathname;
 mkdirSync(OUT, { recursive: true });
 
 // --- access-log tailer: returns new JSON lines since last poll ---
-let logOffset = 0;
+// Baseline at process start (C-020): the file is persistent across runs, so a
+// fresh process must never re-read prior runs' entries — otherwise checks pass
+// on stale evidence. Truncating between scenarios (README) is belt-and-braces.
+const LOG_PATH = new URL("./access.log", import.meta.url).pathname;
+let logOffset = statSync(LOG_PATH).size;
 function pollLog() {
-  const path = new URL("./access.log", import.meta.url).pathname;
-  const size = statSync(path).size;
-  if (size < logOffset) logOffset = 0; // rotated
-  const fd = openSync(path, "r");
+  const size = statSync(LOG_PATH).size;
+  if (size < logOffset) logOffset = 0; // truncated/rotated mid-run
+  const fd = openSync(LOG_PATH, "r");
   const buf = Buffer.alloc(size - logOffset);
   readSync(fd, buf, 0, buf.length, logOffset);
   logOffset = size;
@@ -476,15 +497,24 @@ async function seedStaleToken(context) {
   `);
 }
 
-async function drive(browser, { seedStale = false } = {}) {
+async function drive(browser, { seedStale = false, attachShimFn } = {}) {
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   if (seedStale) await seedStaleToken(context);
+  if (attachShimFn) await attachShimFn(context); // BEFORE any navigation (O-001): the
+  // exchange document's add_and_change transition is the M2-critical one to log.
   const page = await context.newPage();
   const t0 = Date.now();
   await page.goto("https://komodo.oidctest.localhost");
-  await page.getByRole("button", { name: /oidc|single sign/i }).first().click().catch(() => {});
-  await page.waitForURL(/portal\.oidctest\.localhost/, { timeout: 20_000 });
-  await page.getByRole("button", { name: /sign in|continue/i }).first().click().catch(() => {});
+  // The pinned mogh_ui@1.2.7 LoginPage renders NO OIDC button (dist-verified);
+  // its only OIDC entry is the oidc_auto_redirect effect, which the harness
+  // pins FALSE (M6 discrimination). Start the identical core-side flow by
+  // direct navigation — mogh_auth_client's externalLogin builds exactly this
+  // URL (dist src/lib.ts: `${AUTH_URL}/oidc/login?redirect=...`).
+  await page.goto("https://komodo.oidctest.localhost/auth/oidc/login?redirect=%2F");
+  await page.waitForURL(/portal\.oidctest\.localhost/, { timeout: 20_000 }); // fail loudly
+  await page.getByRole("button", { name: /sign in|continue/i }).first().click().catch((e) => {
+    throw new Error("drive: portal sign-in control not found — check the mock's dev interaction"); 
+  });
   await page.waitForURL(/komodo\.oidctest\.localhost/, { timeout: 20_000 });
   return { context, page, t0 };
 }
@@ -493,16 +523,32 @@ async function drive(browser, { seedStale = false } = {}) {
 const checks = [];
 function check(name, fn) { checks.push({ name, fn }); }
 
+// Caddy's JSON log ts is a float in EPOCH SECONDS (C-017) — never Date.parse it.
+const logSec = (e) => {
+  const v = typeof e.ts === "number" ? e.ts : Number(e.ts);
+  if (!Number.isFinite(v)) throw new Error("non-finite log timestamp — check field/unit");
+  return v;
+};
 check("exchange 200 observed", (log) => log.some((e) => e.request.uri.includes("/auth/login/ExchangeForJwt") && (e.resp_headers?.status ?? e.status) === 200));
-check("authenticated app follow-up <= 3s after exchange", (log, ctx) => {
+check("authenticated app follow-up <= 3s after exchange", (log) => {
   const exch = log.filter((e) => e.request.uri.includes("ExchangeForJwt")).at(-1);
   if (!exch) return false;
-  return log.some((e) => Date.parse(e.ts ?? e.start) - Date.parse(exch.ts ?? exch.start) <= 3_000
-    && (e.request.headers?.Authorization ?? e.request.headers?.authorization) && (e.resp_headers?.status ?? e.status) === 200);
+  return log.some((e) =>
+    logSec(e) - logSec(exch) <= 3.0 // seconds, log's own unit
+    && (e.request.headers?.Authorization ?? e.request.headers?.authorization)
+    && (e.resp_headers?.status ?? e.status) === 200);
 });
-check("success-row unauth-or-401 window total <= 4", (log) => /* rows between callback & dashboard */ true);
-check("update websocket connected", (log) => log.some((e) => e.request.uri.includes("/ws/update") && (e.status ?? 101) === 101));
-check("zero residual after settled-failure (excl /auth/login/*)", (log, ctx) => /* rows in [settle, settle+60s] */ true);
+check("success-row unauth-or-401 window total <= 4", () => { throw new Error("check not implemented"); });
+check("update websocket connected (positive, two signals)", (log, { page }) => {
+  // C-019: no default-to-success. The log row must carry status 101 explicitly,
+  // AND the browser side must show liveness (console-shim or ws state).
+  const row = log.find((e) => e.request.uri.includes("/ws/update"));
+  if (row?.status !== 101 && row?.resp_headers?.status !== "101") return false;
+  // Step 2 fills the browser-side liveness marker here (console-shim message
+  // from the socket's on_login, or the ws connected state). Fail closed until then:
+  return false;
+});
+check("zero residual after settled-failure (excl /auth/login/*)", () => { throw new Error("check not implemented"); });
 // … scenario composition below …
 
 const log0 = [];
@@ -525,8 +571,10 @@ async function attachShim(context, rows) {
 }
 
 const browser = await chromium.launch();
-const { context, page, t0 } = await drive(browser, { seedStale: SCEN === "m1-seeded" });
-await attachShim(context, rows);
+const { context, page, t0 } = await drive(browser, {
+  seedStale: SCEN === "m1-seeded",
+  attachShimFn: (ctx) => attachShim(ctx, rows), // pre-navigation (O-001)
+});
 page.on("console", (msg) => {
   if (msg.text()?.startsWith("TOKENS")) rows.push({ ts: Date.now(), kind: "tokens", detail: msg.text() });
 });
@@ -542,7 +590,15 @@ if (SCEN === "m2-forced") {
     await route.fulfill({ response: resp, json: body });
   });
 }
-await page.waitForTimeout(SCEN === "hung" ? 20_000 : 8_000);
+// Failure rows must OBSERVE the 60 s zero-residual window they assert (C-018):
+// settle, then wait it out. The stale-token feed resumes at the next 30 s poll
+// tick, which a short-lived driver would never see.
+if (["hung", "exchange-error"].includes(SCEN)) {
+  await page.waitForTimeout(SCEN === "hung" ? 20_000 : 8_000); // settle
+  await page.waitForTimeout(60_000); // the asserted residual window itself
+} else {
+  await page.waitForTimeout(8_000);
+}
 // Delay assertions (C-005): a no-op knob must fail visibly. The observed
 // exchange round-trip (Caddy log: request start -> response) must be >= DELAY.
 // The hung row additionally asserts the settlement path TAKEN (converged via
@@ -572,7 +628,7 @@ exist only to fix the file's shape now.
 
 - [ ] **Step 2: implement the window predicates** — replace the stubbed bodies with the §6 logic: find `callback 303` row (document request to `/` carrying `redeem_ready=true`), find `dashboard` row (first authenticated `/user` 200 after exchange), filter `unauthOrFail` rows in-window, assert totals and 15 s sliding max; for failure rows assert the exclusion-listed zero-residual over `[settlement, settlement+60_000]`.
 
-- [ ] **Step 3: scenario composition** — `success` (plain), `latency` (`DELAY_AUTH_MS=2000`; asserts observed exchange round-trip ≥ 2000 ms from log timestamps), `m1-seeded` (Step `seedStaleToken`), `m2-forced` (route-rewritten sub-less exchange response; asserts the drop flag is set and the login page surfaces "session could not be stored" post-fix), `exchange-error` (complete a portal login, then replay `/?redeem_ready=true` with the consumed session → exchange 4xx; asserts converged failure path pre-fix eternal-spinner), `hung` (`DELAY_AUTH_MS=15000` — past the watchdog; asserts the settlement path TAKEN: spinner then `/login`, then §7.7 landing post-fix), `isolation` (post-login `page.evaluate(fetch("/execute/StartDeployment", {method:"POST"}))` → expects 4xx and asserts NO LoadingScreen flip and no reload to `/login` within 2 s).
+- [ ] **Step 3: scenario composition** — `success` (plain), `latency` (`DELAY_AUTH_MS=2000`; asserts observed exchange round-trip ≥ 2000 ms from log timestamps), `m1-seeded` (Step `seedStaleToken`), `m2-forced` (route-rewritten sub-less exchange response; asserts the drop flag is set and the login page surfaces "session could not be stored" post-fix), `exchange-error` (complete a portal login, then replay `/?redeem_ready=true` with the consumed session → exchange 4xx; asserts converged failure path pre-fix eternal-spinner), `hung` (`DELAY_AUTH_MS=15000` — past the watchdog; asserts the settlement path TAKEN — a LoadingScreen must be observed BEFORE the `/login` landing (spinner selector from mogh_ui's LoadingScreen), otherwise the row cannot distinguish watchdog-settled from reload-landed — then §7.7 landing post-fix), `isolation` (post-login `page.evaluate(fetch("/execute/StartDeployment", {method:"POST"}))` → expects 4xx and asserts NO LoadingScreen flip and no reload to `/login` within 2 s).
 
 - [ ] **Step 4: run `success` against the stack; fix log-parsing mismatches against real Caddy JSON field names** (`request.headers` casing, timestamp field) until assertions evaluate against real data. Record the two or three field-name adjustments in the README.
 
@@ -808,7 +864,7 @@ import { createRedeemGateHooks, initRedeemGate } from "@/lib/redeem-gate";
 // …existing imports…
 
 const client = new QueryClient({
-  defaultOptions: { queries: { retry: false } },
+  defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   mutationCache: new MutationCache(createRedeemGateHooks()),
 });
 
@@ -909,8 +965,11 @@ export function useUser(config?: { enabled?: boolean }) {
     refetchInterval: 30_000,
     ...config,
     // Composed AFTER the spread (§7.6 rule): caller intent composes with the
-    // jwt gate instead of replacing it.
-    enabled: (config?.enabled ?? true) && hasJwt,
+    // jwt gate instead of replacing it (function form composed too).
+    enabled:
+      typeof config?.enabled === "function"
+        ? (q) => (config.enabled(q) !== false) && hasJwt
+        : (config?.enabled ?? true) && hasJwt,
   });
   // …rest unchanged…
 ```
@@ -925,7 +984,12 @@ export function useUser(config?: { enabled?: boolean }) {
     ...config,
     // Composed AFTER the spread: an explicit caller `enabled` (including
     // `undefined`) used to replace the jwt gate wholesale — 46 sites.
-    enabled: hasJwt && config?.enabled !== false,
+    // Function-valued enabled (query-core's legal callback form) is composed,
+    // not dropped: `!== false` would silently ignore it.
+    enabled:
+      typeof config?.enabled === "function"
+        ? (q) => hasJwt && config.enabled(q) !== false
+        : hasJwt && config?.enabled !== false,
   });
 ```
 

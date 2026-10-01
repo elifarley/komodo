@@ -203,7 +203,9 @@ a `pending` **event**:
     storage contract — the response shape is `{ jwt: string }`, mogh_ui dist
     `auth/index.js:78`, but the jwt itself is never persisted). This hook runs **before**
     mogh_ui's handler, i.e. before the token write and the reload initiation. §7.4's M3
-    evidence and this flag are the same write — one storage sink.
+    evidence and this flag are one storage **key** with two writers: the config `onSuccess`
+    records pre-reload evidence; the settlement listener rewrites it (refreshing `t` so
+    §7.7's TTL measures from the late settlement, possibly upgrading the phase to `drop`).
   - **Exception-free rule (hard requirement)**: every body installed into the `MutationCache`
     config is fully wrapped in try/catch and **never rethrows**. The pinned `mutation.cjs`
     awaits config `onSuccess` *before* mogh_ui's token write with no per-hook guard (only
@@ -297,7 +299,9 @@ entry landed, upgrade the §7.1 flag to `{t, phase: "drop"}`.
 persisted token copy would outlive `remove_all` and duplicate the credential the design
 works to contain; the M2 comparison needs the jwt only in-memory, in the same task). Writes
 follow the §7.1 exception-free rule + feature-check: when `sessionStorage` is unavailable,
-degrade to console-only signals. The flag exists to carry evidence across the reload and is
+degrade to console-only signals — plus the second loss that degradation causes: without the
+flag, §7.7's late-success redirect never fires, so those users strand on `/login` with
+mogh_ui's Back button (bounded, accepted). The flag exists to carry evidence across the reload and is
 consumed by exactly two readers — the §7.7 redirect (accepts only `phase: "ok"` **fresh**:
 `Date.now() - t < 15_000` — just over the watchdog) and the §7.3 drop message (accepts
 `phase: "drop"`) — and **both readers clear it on read**. Loop-safety rests on the TTL +
@@ -440,6 +444,9 @@ pre-login URL instead of a login form with a Back button.
   timers to ~1/min) can delay the 12 s watchdog for a user who switches away mid-redeem;
   they see an extended spinner, then the settled-failed path. Acceptable; a late success in
   that state is covered by §7.7's TTL window.
+- **Corrupt token store bricks the lib at import**: `mogh_auth_client`'s IIFE `JSON.parse`s
+  `mogh-auth-tokens-v1` unguarded at module load — a corrupt value white-screens the app
+  before any komodo code (incl. §7.3's guarded reads) runs. Upstream-owned; upstream report.
 - **Late success over a re-login**: watchdog fires → the user logs in locally as user B →
   the hung exchange 200s late → mogh_ui's `onSuccess` unconditionally `add_and_change`s the
   OIDC token, overwriting user B's current session pointer. Not komodo-fixable under the
