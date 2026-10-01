@@ -16,16 +16,17 @@
 
 ### Task 1: Harness skeleton — compose, mongo, digest-pinned core
 
-**Goal:** `docker compose -f compose/oidc-dev.compose.yaml up` boots mongo + komodo-core (stock UI) and core reports healthy on the proxy-less path.
+**Goal:** `docker compose -f compose/oidc-dev.compose.yaml up` boots mongo + komodo-core (branch-built UI via the core-override image) and core reports healthy on the proxy-less path.
 
 **Files:**
 - Create: `compose/oidc-dev.compose.yaml`
+- Create: `compose/oidc-dev/core-ui.Dockerfile`
 - Create: `compose/oidc-dev/README.md`
 
 **Acceptance Criteria:**
 - [ ] `docker compose -f compose/oidc-dev.compose.yaml up -d mongo core` ends with both containers running
-- [ ] `curl -s -o /dev/null -w '%{http_code}' http://localhost:9120` → `200` (core serves stock UI directly)
-- [ ] The core image reference in the compose file is digest-pinned
+- [ ] `curl -s -o /dev/null -w '%{http_code}' http://localhost:9120` → `200` (core serves the branch-built UI directly)
+- [ ] The core base image is digest-pinned; the served UI comes from `core-ui.Dockerfile`'s build stage (spec §6.3)
 
 **Verify:** `docker compose -f compose/oidc-dev.compose.yaml ps --format '{{.Service}} {{.Status}}'` → both `Up`.
 
@@ -38,7 +39,26 @@ docker buildx imagetools inspect ghcr.io/moghtech/komodo-core:v2.3.3 | grep -i d
 ```
 Record the manifest digest (`sha256:…`) — substitute it for `PINNED_DIGEST` in Step 2.
 
-- [ ] **Step 2: Write `compose/oidc-dev.compose.yaml`**
+- [ ] **Step 2: Write `compose/oidc-dev/core-ui.Dockerfile`**
+
+```dockerfile
+# Branch UI served by the digest-pinned core image (spec §6.3).
+# Stage 1 mirrors ui/Dockerfile's builder stage; stage 2 is production core.
+ARG CORE_IMAGE
+FROM node:22.12-alpine AS builder
+WORKDIR /builder
+COPY ./ui ./ui
+COPY ./client/core/ts ./client
+ARG VITE_KOMODO_HOST=""
+ENV VITE_KOMODO_HOST=$VITE_KOMODO_HOST
+RUN cd client && yarn && yarn build && yarn link
+RUN cd ui && yarn link komodo_client && yarn && yarn build
+
+FROM ${CORE_IMAGE}
+COPY --from=builder /builder/ui/dist /app/ui
+```
+
+- [ ] **Step 3: Write `compose/oidc-dev.compose.yaml`**
 
 ```yaml
 # OIDC redeem-race harness (moghtech/komodo#1665). See compose/oidc-dev/README.md.
@@ -59,8 +79,16 @@ services:
       retries: 12
 
   core:
+    # Branch-built UI served by core exactly like production (spec §6.3):
+    # stage 1 = ui/Dockerfile's builder stage on this branch; stage 2 = the
+    # digest-pinned core image with the dist copied to /app/ui.
     # Digest pinned in compose/oidc-dev/.env (KOMODO_CORE_IMAGE) — see README step 1.
-    image: ${KOMODO_CORE_IMAGE}
+    build:
+      context: ..
+      dockerfile: compose/oidc-dev/core-ui.Dockerfile
+      args:
+        CORE_IMAGE: ${KOMODO_CORE_IMAGE}
+    image: komodo-oidc-dev-core
     restart: unless-stopped
     depends_on:
       mongo:
@@ -85,14 +113,14 @@ volumes:
   oidc-dev-repo-cache:
 ```
 
-- [ ] **Step 3: Write `compose/oidc-dev/.env`** (gitignored content pattern — check `git check-ignore`; if `.env` files are not ignored in this repo, name it `.env.example` + copy at runtime; the docker `--env-file` flag takes any name)
+- [ ] **Step 4: Write `compose/oidc-dev/.env`** (gitignored content pattern — check `git check-ignore`; if `.env` files are not ignored in this repo, name it `.env.example` + copy at runtime; the docker `--env-file` flag takes any name)
 
 ```sh
 # Pin the digest you recorded in Step 1:
 KOMODO_CORE_IMAGE=ghcr.io/moghtech/komodo-core@sha256:PINNED_DIGEST
 ```
 
-- [ ] **Step 4: Write `compose/oidc-dev/core-config.toml`** (minimal file config; field names from `config/core.config.toml` — verify the `oidc_*` block against that file when wiring Task 3)
+- [ ] **Step 5: Write `compose/oidc-dev/core-config.toml`** (minimal file config; field names from `config/core.config.toml` — verify the `oidc_*` block against that file when wiring Task 3)
 
 ```toml
 # Harness core config. Never use these secrets outside compose/oidc-dev.
@@ -103,18 +131,18 @@ oidc_auto_redirect = false
 jwt_secret = "oidc-dev-jwt-secret-not-for-production"
 ```
 
-- [ ] **Step 5: Write `compose/oidc-dev/README.md`** — run instructions (the `docker compose` line from the yaml header), the digest-pinning step, and the pin: `node-oidc-provider` version `11.10.1` (the version this harness's mock is written against; bump only with a re-run of the full suite).
+- [ ] **Step 6: Write `compose/oidc-dev/README.md`** — run instructions (the `docker compose` line from the yaml header), the digest-pinning step, and the pin: `node-oidc-provider` version `11.10.1` (the version this harness's mock is written against; bump only with a re-run of the full suite).
 
-- [ ] **Step 6: Boot and verify**
+- [ ] **Step 7: Boot and verify**
 
 ```sh
-docker compose -f compose/oidc-dev.compose.yaml --env-file compose/oidc-dev/.env up -d mongo core
+docker compose -f compose/oidc-dev.compose.yaml --env-file compose/oidc-dev/.env up -d --build mongo core
 docker compose -f compose/oidc-dev.compose.yaml ps --format '{{.Service}} {{.Status}}'
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:9120
 ```
 Expected: both `Up`; `200`.
 
-- [ ] **Step 7: Commit** — `hug a compose/oidc-dev.compose.yaml compose/oidc-dev/README.md compose/oidc-dev/core-config.toml` then `hug c -F - <<'EOF' … feat(harness): oidc-dev skeleton — digest-pinned core + mongo … EOF` (do NOT commit `compose/oidc-dev/.env`).
+- [ ] **Step 8: Commit** — `hug a compose/oidc-dev.compose.yaml compose/oidc-dev/core-ui.Dockerfile compose/oidc-dev/README.md compose/oidc-dev/core-config.toml` then `hug c -F - <<'EOF' … feat(harness): oidc-dev skeleton — digest-pinned core + mongo … EOF` (do NOT commit `compose/oidc-dev/.env`).
 
 ### Task 2: OIDC mock provider (node-oidc-provider) + forward-auth endpoint
 
@@ -226,15 +254,15 @@ ENV MOCK_ISSUER=https://portal.oidctest.localhost
 EXPOSE 3344
 CMD ["yarn", "start"]
 ```
-(Build context is the repo root: `docker compose` builds with `context: .`, `dockerfile: compose/oidc-dev/oidc-mock/Dockerfile`.)
+(Build context is `compose/oidc-dev` — see Task 2 Step 5; the Dockerfile's `COPY oidc-mock/...` paths resolve from there.)
 
 - [ ] **Step 5: add the service to `compose/oidc-dev.compose.yaml`**
 
 ```yaml
   oidc-mock:
     build:
-      context: ..
-      dockerfile: compose/oidc-dev/oidc-mock/Dockerfile
+      context: ./oidc-dev
+      dockerfile: oidc-mock/Dockerfile
     restart: unless-stopped
     environment:
       MOCK_ISSUER: https://portal.oidctest.localhost
@@ -286,47 +314,44 @@ komodo.oidctest.localhost:443 {
 		output file /data/access.log
 		format json
 	}
-	# LATENCY KNOB (spec §6): delay auth requests; must stay < the 12 s watchdog (§7.1).
-	# Bump via compose/oidc-dev/.env DELAY_AUTH_MS. The dedicated past-watchdog row
-	# uses DELAY_AUTH_MS=15000 in a separate profile.
-	reverse_proxy core:9120 {
-		@auth path /auth/login/*
-		rewrite @auth /auth{uri}
-		header @auth X-Harness-Delay "1"
-	}
 	forward_auth oidc-mock:3344 {
 		uri /verify
+	}
+	# LATENCY KNOB (spec §6): /auth/login/* goes through the delay sidecar;
+	# everything else straight to core. DELAY_AUTH_MS must stay < the 12 s
+	# watchdog (§7.1); the dedicated past-watchdog row uses 15000.
+	route {
+		@auth path /auth/login/*
+		handle @auth { reverse_proxy delay:9999 }
+		handle { reverse_proxy core:9120 }
 	}
 }
 ```
 
-Implementation note: Caddy's `delay` is not a native directive — implement the knob as a
-10-line `caddy-l4`-free alternative: a tiny `delay` sidecar or (simpler, chosen) route the
-`/auth/login/*` path through a `route` block with Caddy's `handle` + a delay plugin-free
-approach: **use Caddy's `reverse_proxy` health-free double-hop through a one-file Node
-delay proxy** (`compose/oidc-dev/delay.mjs`: `http` server that `setTimeout(DELAY_AUTH_MS)`
-then pipes to `core:9120`). The compose file points the Caddy upstream for `/auth/login/*`
-at `delay:9999` instead of `core:9120`.
+The knob is the one-file Node delay proxy below (`compose/oidc-dev/delay.mjs`): Caddy
+routes `/auth/login/*` to `delay:9999`, which awaits a real `setTimeout(DELAY_AUTH_MS)`
+before dispatching to `core:9120`. (`ClientRequest.setTimeout` is NOT used — it only arms
+a socket-inactivity event with no listener; it delays nothing.)
 
 ```js
 // compose/oidc-dev/delay.mjs — adds DELAY_AUTH_MS to /auth/login/* only.
 import http from "node:http";
 const DELAY = parseInt(process.env.DELAY_AUTH_MS ?? "0", 10);
-http.createServer((req, res) => {
+http.createServer(async (req, res) => {
+  if (req.url?.startsWith("/auth/login/") && DELAY > 0) {
+    await new Promise((r) => setTimeout(r, DELAY)); // the ONLY working delay: await before dispatch
+  }
   const upstream = http.request(
     { host: "core", port: 9120, path: req.url, method: req.method, headers: req.headers },
     (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); },
   );
   req.pipe(upstream);
-  if (req.url?.startsWith("/auth/login/") && DELAY > 0) {
-    upstream.setTimeout(DELAY); // simplest deterministic delay: stall the upstream request
-  }
 }).listen(9999);
 ```
 
-(If the timer-stall approach misbehaves, replace with an explicit `await new Promise(r => setTimeout(r, DELAY))` before dispatching — same file, same knob.)
+Validate the Caddyfile as a Task 3 acceptance step: `docker compose run --rm --entrypoint caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile`.
 
-- [ ] **Step 2: add `caddy` + `delay` services to the compose file**
+- [ ] **Step 2: add `caddy` + `delay` services to the compose file** — and `touch compose/oidc-dev/access.log` BEFORE the first `up`: Docker pre-creates a **directory** (not a file) for a bind-mount source that does not exist, which makes Caddy's file-logger fail; the empty file must exist first.
 
 ```yaml
   delay:
@@ -376,7 +401,8 @@ volumes:
 **Acceptance Criteria:**
 - [ ] `node compose/oidc-dev/verify.mjs success` exits 0 on a healthy stack and prints per-assertion PASS lines
 - [ ] `node compose/oidc-dev/verify.mjs m1-seeded` seeds the stale token (expired, schema `{current, tokens:[{user_id, jwt}]}`) and asserts stale-token requests during the redeem window (pre-fix run)
-- [ ] Every scenario prints a final `SCENARIO <name> <PASS|FAIL>` line and writes per-request rows (url, authorization present, status, ts) to `compose/oidc-dev/out/<scenario>.ndjson`
+- [ ] Every scenario prints a final `SCENARIO <name> <PASS|FAIL>` line and writes per-request rows (url, authorization present, status, ts) to `compose/oidc-dev/out/<scenario>.ndjson`, including console-shim TOKENS rows
+- [ ] `latency`/`hung` assert observed exchange round-trip ≥ `DELAY_AUTH_MS` (a no-op knob fails visibly)
 
 **Verify:** run both scenarios against the Task 3 stack; expect `success` to PASS its environment assertions and the fix-dependent assertions to be reported as `FIX-DEPENDENT` (skipped pre-fix) so Task 5 can flip them on.
 
@@ -405,7 +431,9 @@ function pollLog() {
   const buf = Buffer.alloc(size - logOffset);
   readSync(fd, buf, 0, buf.length, logOffset);
   logOffset = size;
-  return buf.toString("utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  return buf.toString("utf8").split("\n").filter(Boolean).flatMap((l) => {
+    try { return [JSON.parse(l)]; } catch { return []; } // torn write at a poll boundary
+  });
 }
 
 const APP_FETCH_ORIGINS = ["https://komodo.oidctest.localhost"];
@@ -416,7 +444,11 @@ const isAppFetch = (e) =>
 const unauthOrFail = (e) => {
   const auth = e.request.headers?.Authorization ?? e.request.headers?.authorization;
   const status = e.resp_headers?.status ? parseInt(e.resp_headers.status) : e.status;
-  return (!auth && !e.request.uri?.startsWith("/auth/login/")) || status === 401 || status === 403;
+  // §6 exclusion list FIRST: /auth/login/* without a header is auth-surface
+  // discovery by design (GetLoginOptions, a consumed-session exchange 401) and
+  // is exempt from BOTH disjuncts below.
+  if (!auth && e.request.uri?.startsWith("/auth/login/")) return false;
+  return !auth || status === 401 || status === 403;
 };
 
 const rows = [];
@@ -476,9 +508,45 @@ check("zero residual after settled-failure (excl /auth/login/*)", (log, ctx) => 
 const log0 = [];
 setInterval(() => { for (const e of pollLog()) { record(e); log0.push(e); } }, 250).unref();
 
+// Console shim (spec §6): log localStorage token-store transitions with ts,
+// collected via page.on('console') into the same ndjson.
+async function attachShim(context, rows) {
+  await context.addInitScript(`
+    const KEY = "mogh-auth-tokens-v1";
+    let prev = localStorage.getItem(KEY);
+    const report = (v) => console.debug("TOKENS", Date.now(), JSON.stringify(v));
+    report(prev);
+    const orig = localStorage.setItem.bind(localStorage);
+    localStorage.setItem = (k, v) => {
+      if (k === KEY && v !== prev) { prev = v; report(v); }
+      return orig(k, v);
+    };
+  `);
+}
+
 const browser = await chromium.launch();
 const { context, page, t0 } = await drive(browser, { seedStale: SCEN === "m1-seeded" });
+await attachShim(context, rows);
+page.on("console", (msg) => {
+  if (msg.text()?.startsWith("TOKENS")) rows.push({ ts: Date.now(), kind: "tokens", detail: msg.text() });
+});
+// m2-forced: rewrite the exchange response with a structurally valid sub-less
+// jwt -> add_and_change silently drops it (tokens.ts:21-22) while the
+// subscription still sees a jwt -> the M2 detection must fire.
+if (SCEN === "m2-forced") {
+  const sublessJwt = "eyJhbGciOiJIUzI1NiJ9." + Buffer.from(JSON.stringify({ exp: 9999999999 })).toString("base64url") + ".sig";
+  await context.route("**/auth/login/ExchangeForJwt", async (route) => {
+    const resp = await route.fetch();
+    const body = await resp.json().catch(() => ({}));
+    if (body?.jwt) body.jwt = sublessJwt;
+    await route.fulfill({ response: resp, json: body });
+  });
+}
 await page.waitForTimeout(SCEN === "hung" ? 20_000 : 8_000);
+// Delay assertions (C-005): a no-op knob must fail visibly. The observed
+// exchange round-trip (Caddy log: request start -> response) must be >= DELAY.
+// The hung row additionally asserts the settlement path TAKEN (converged via
+// the watchdog: LoadingScreen then /login), not merely the final URL.
 
 // dashboard-rendered (§6): URL is / (no redeem_ready) AND a /user GET returned 200 after callback
 const dash = rows.some((r) => r.url.endsWith("/user") && r.auth && r.status === 200) && !page.url().includes("redeem_ready");
@@ -504,7 +572,7 @@ exist only to fix the file's shape now.
 
 - [ ] **Step 2: implement the window predicates** — replace the stubbed bodies with the §6 logic: find `callback 303` row (document request to `/` carrying `redeem_ready=true`), find `dashboard` row (first authenticated `/user` 200 after exchange), filter `unauthOrFail` rows in-window, assert totals and 15 s sliding max; for failure rows assert the exclusion-listed zero-residual over `[settlement, settlement+60_000]`.
 
-- [ ] **Step 3: scenario composition** — `success` (plain), `latency` (`DELAY_AUTH_MS=2000` env), `m1-seeded` (Step `seedStaleToken`), `hung` (`DELAY_AUTH_MS=15000` — past the watchdog; asserts settled-failed convergence then §7.7 landing post-fix), `isolation` (post-login `page.evaluate(fetch("/execute/StartDeployment", {method:"POST"}))` → expects 4xx and asserts NO LoadingScreen flip and no reload to `/login` within 2 s).
+- [ ] **Step 3: scenario composition** — `success` (plain), `latency` (`DELAY_AUTH_MS=2000`; asserts observed exchange round-trip ≥ 2000 ms from log timestamps), `m1-seeded` (Step `seedStaleToken`), `m2-forced` (route-rewritten sub-less exchange response; asserts the drop flag is set and the login page surfaces "session could not be stored" post-fix), `exchange-error` (complete a portal login, then replay `/?redeem_ready=true` with the consumed session → exchange 4xx; asserts converged failure path pre-fix eternal-spinner), `hung` (`DELAY_AUTH_MS=15000` — past the watchdog; asserts the settlement path TAKEN: spinner then `/login`, then §7.7 landing post-fix), `isolation` (post-login `page.evaluate(fetch("/execute/StartDeployment", {method:"POST"}))` → expects 4xx and asserts NO LoadingScreen flip and no reload to `/login` within 2 s).
 
 - [ ] **Step 4: run `success` against the stack; fix log-parsing mismatches against real Caddy JSON field names** (`request.headers` casing, timestamp field) until assertions evaluate against real data. Record the two or three field-name adjustments in the README.
 
@@ -550,10 +618,15 @@ exist only to fix the file's shape now.
 ```ts
 import { useSyncExternalStore } from "react";
 import type { MutationCacheConfig, QueryClient } from "@tanstack/react-query";
+import { MoghAuth } from "komodo_client";
 
 // Redeem lifecycle (spec §7.1). "idle" means OPEN everywhere: only a document
 // that itself arms the redeem mutation can leave idle, so every gate keyed on
 // `!== "pending"` behaves exactly like today on normal page loads.
+// Delivery fact (spec §4): cache listeners run synchronously inside the
+// dispatch's task — a render-phase dispatch notifies zero effect-scoped
+// subscribers, deterministically. Arming uses the config hooks, which run
+// inside execute regardless.
 export type RedeemState = "idle" | "pending" | "settled-ok" | "settled-failed";
 
 const REDEEM_KEY = "ExchangeForJwt";
@@ -571,6 +644,13 @@ const isExchange = (m: { options?: { mutationKey?: unknown[] } } | undefined) =>
 
 function setState(next: RedeemState) {
   if (state === next) return;
+  if (next === "settled-failed") {
+    // Hygiene runs HERE — synchronously, before the flip can trigger any
+    // React render. Doing this in Router's effect would run after the parent
+    // provider's flip render, whose hasJwt would still read stale-true, and
+    // one stale-token request would escape after settlement.
+    safe(() => MoghAuth.LOGIN_TOKENS.remove_all(), "remove_all");
+  }
   state = next;
   if (state !== "pending" && watchdog !== undefined) {
     clearTimeout(watchdog);
@@ -773,7 +853,9 @@ export const Router = () => {
 
   useEffect(() => {
     if (redeemState !== "settled-failed") return;
-    MoghAuth.LOGIN_TOKENS.remove_all(); // storage hygiene; poller control is §7.5's gate
+    // NOTE: token hygiene (remove_all) does NOT live here — it runs in the
+    // settlement listener (redeem-gate.ts), synchronously before this render.
+    // This effect is UI convergence only: URL strip + notification.
     const url = new URL(window.location.href);
     for (const p of ["redeem_ready", "totp", "passkey"]) url.searchParams.delete(p);
     window.history.replaceState(null, "", url.pathname + url.search);
@@ -905,7 +987,7 @@ export default function Login(props: {
       });
       return;
     }
-    if (!flagFresh(flag)) return; // stale: ignore, leave for TTL-free cleanup
+    if (!flagFresh(flag)) return; // stale: ignored (§7.3 TTL); lingers harmlessly until tab close
     // jwt presence, decode-free: any entry in the mogh-auth store (§7.3 schema).
     let hasJwt = false;
     try {
@@ -953,7 +1035,7 @@ export default function Login(props: {
 
 **Steps:**
 
-- [ ] **Step 1:** rebuild the UI override image; run all five scenarios; attach results to `BASELINE.md` (pre vs post columns).
+- [ ] **Step 1:** rebuild the UI override image (`docker compose build core`); run all seven scenarios (`success`, `latency`, `m1-seeded`, `m2-forced`, `exchange-error`, `hung`, `isolation`); attach results to `BASELINE.md` (pre vs post columns) **plus the §8-row→scenario map table** in the harness README (each of §8's 8 rows mapped to the scenario id + assertion names that exercise it — §11's by-name criterion is checked against this map, not against the output format).
 - [ ] **Step 2:** diff-scope check: `hug diff origin/main --stat` — only `ui/src/**` and `compose/oidc-dev*` (workflow docs `docs/superpowers/**` are stripped before final review per spec §10; note in PR body).
 - [ ] **Step 3:** draft the upstream issues text into `BASELINE.md`.
 - [ ] **Step 4:** Commit (`docs(harness): post-fix results + upstream issue drafts`).
@@ -962,6 +1044,6 @@ export default function Login(props: {
 
 ## Self-review notes
 
-- Spec coverage: §6 → Tasks 1–5; §7.1 → Task 6/7; §7.2 → Task 8; §7.3 → Task 6 (flag contract) + Task 10 (drop consumer); §7.4 → Task 7 (the same `onSuccess` write is the recorder); §7.5 → Task 9; §7.6 → Task 9 Step 2; §7.7 → Task 10; §8 matrix → Task 4 assertions; §9 → Task 11; §11 criteria → Tasks 4/5/11.
+- Spec coverage: §6 (incl. the core-ui override image, built by Task 1 and rebuilt in Task 11) → Tasks 1–5; §7.1 → Task 6/7 (incl. listener-side settled-failed hygiene); §7.2 → Task 8 (UI convergence only); §7.3 → Task 6 (flag contract) + Task 10 (drop consumer); §7.4 → Task 7 (the same `onSuccess` write is the recorder); §7.5 → Task 9 (single mechanism: read deferral; the connect effect inherits it); §7.6 → Task 9 Step 2; §7.7 → Task 10; §8 matrix → Task 4 assertions + the Task 11 row→scenario map; §9 → Task 11; §11 criteria → Tasks 4/5/11.
 - Type consistency: `RedeemState`, `useRedeemGateOpen`, `createRedeemGateHooks`, `initRedeemGate`, `readRedeemFlag`/`consumeRedeemFlag`/`flagFresh` named identically across Tasks 6–10.
 - Known deviation from writing-plans' TDD default: no unit-test framework (spec §3); red-green lives at harness level (Task 5 red → Task 11 green).
