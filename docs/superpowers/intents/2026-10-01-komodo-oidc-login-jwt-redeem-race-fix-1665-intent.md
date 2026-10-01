@@ -1,6 +1,11 @@
 # Intent: Fix OIDC login losing the exchanged JWT — UI never authenticates (moghtech/komodo#1665)
 
-Author: Elifarley. Status: draft.
+Author: Elifarley. Status: draft — **superseded in mechanism by the design spec**:
+[docs/superpowers/specs/2026-10-01-komodo-oidc-login-jwt-redeem-race-fix-1665-design.md](../specs/2026-10-01-komodo-oidc-login-jwt-redeem-race-fix-1665-design.md)
+§7. The "one-shot invalidate on token-store change" and storage-listener machinery sketched in
+Proposed outcome were deleted in roast round 1 (unreachable on the default success path; the
+storage arm invalidated into a stale in-memory snapshot); the settlement-gate direction, the
+constraints, and the repro-before-fix mandate stand.
 
 ## Problem
 
