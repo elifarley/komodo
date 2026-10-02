@@ -80,7 +80,11 @@ export const Router = () => {
       failureNoticeShown = true;
       notifications.show({
         title: "Login didn't complete",
-        message: "Returned to the login page.",
+        // Wording stays true on BOTH end states: with no surviving session
+        // this lands on /login; with a valid pre-existing session the app
+        // renders right here (failure paths are store-neutral, round-8
+        // C-003) — never claim a destination.
+        message: "The login attempt didn't complete — please try again.",
         color: "red",
       });
     }

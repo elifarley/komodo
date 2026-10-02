@@ -266,27 +266,35 @@ export function initRedeemGate(client: QueryClient) {
         const tokens = Array.isArray(store?.tokens) ? store.tokens : undefined;
         const jwtAbsent = !tokens?.some((t) => !!t && t.jwt === jwt);
         // Schema guard — a "drop" verdict needs the absence to be
-        // TRUSTWORTHY, and two shapes of doubt say it is not:
-        //  1. the pinned key parsed but is not the expected
-        //     `{ tokens: [...] }` schema (a non-store wrote this key, or the
-        //     schema changed under us); or
-        //  2. mogh's own closure view holds a jwt while our read of the
-        //     pinned key lacks THIS one — a successful add_and_change
-        //     updates that view in-process, so a truthy jwt() contradicting
-        //     our absence means the library wrote a DIFFERENT key (upstream
-        //     key/schema rename under ^1.7.1) and our view is stale by
-        //     construction.
-        // Both log and fail toward "ok" — never a false drop. KEY POINT:
-        // plain absence (store undefined) with an EMPTY library view is not
-        // doubt — that is exactly the m2 silent-drop shape (add_and_change
-        // swallowed the token; nothing was written anywhere), so it must
-        // still verdict "drop".
+        // TRUSTWORTHY. Four populations reach this line with jwtAbsent
+        // true, discriminated by what the library's closure view holds (a
+        // successful add_and_change sets that view to the EXCHANGED jwt
+        // in-process; a dropped one leaves it untouched):
+        //  1. store absent, closure EMPTY — the m2 canonical silent drop
+        //     (add_and_change swallowed the token; nothing was written
+        //     anywhere)                                        -> "drop"
+        //  2. store holds a PRE-EXISTING session, closure = that OLD token
+        //     (round-9 C-003: the round-7 check used mere truthiness here,
+        //     which misread this population as drift — a dropped exchange
+        //     in a logged-in document went completely silent)  -> "drop"
+        //  3. closure === THE EXCHANGED jwt while the pinned key lacks it —
+        //     the library wrote SOMEWHERE ELSE (upstream key/schema rename
+        //     under ^1.7.1); our absence reading is stale by construction
+        //                                               -> drift, loud "ok"
+        //  4. the pinned key parsed but is not the expected
+        //     `{ tokens: [...] }` schema — a non-store wrote this key
+        //                                               -> drift, loud "ok"
+        // Population 3 must fail toward "ok" (never a false drop);
+        // populations 1-2 are the real drops this detector exists for.
+        // EQUALITY is the discriminator — truthiness would collapse
+        // populations 2 and 3 into one wrong verdict.
+        const libJwt = safe(() => MoghAuth.LOGIN_TOKENS.jwt(), "jwt read");
         const driftSuspected =
           (store !== undefined && tokens === undefined) ||
-          (jwtAbsent && !!safe(() => MoghAuth.LOGIN_TOKENS.jwt(), "jwt read"));
+          (jwtAbsent && libJwt === jwt);
         if (driftSuspected) {
           console.error(
-            `redeem-gate: mogh token store shape unrecognized for "${MOGH_TOKENS_KEY}" — silent-drop detection unavailable (upstream key/schema drift suspected)`,
+            `redeem-gate: mogh token store shape unrecognized for "${MOGH_TOKENS_KEY}" — silent-drop detection unavailable (library closure view holds the EXCHANGED jwt: upstream key/schema drift suspected)`,
           );
         } else if (jwtAbsent) {
           phase = "drop";
