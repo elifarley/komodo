@@ -1,0 +1,70 @@
+# OIDC redeem-race harness (moghtech/komodo#1665). See compose/oidc-dev/README.md.
+# Up:  docker compose -f compose/oidc-dev.compose.yaml --env-file compose/oidc-dev/.env up -d --build
+name: komodo-oidc-dev
+
+services:
+  mongo:
+    image: mongo:8
+    restart: unless-stopped
+    # A bare `rs.initiate()` self-registers under the container's HOSTNAME,
+    # which defaults to the ephemeral container id — recreate the container and
+    # the persisted RS config names a member that no longer exists
+    # ("InvalidReplicaSetConfig: not a member of it"). Pinning the hostname to
+    # the service DNS name keeps the RS member address stable across
+    # recreations AND matches KOMODO_DATABASE_URI's `mongo` host.
+    hostname: mongo
+    # mongod 8 uses the rseq syscall; podman <= 3.4 ships a pre-rseq seccomp
+    # profile that SIGSEGVs it in a tcmallocBg crash loop (signal 11, "CHECK in
+    # SlowFence: fd >= 0"). Unconfined seccomp is a LOCAL DEV harness tradeoff
+    # only — never copy this into a production compose.
+    security_opt:
+      - seccomp=unconfined
+    volumes:
+      - oidc-dev-mongo:/data/db
+    command: [--replSet, rs0, --bind_ip_all]
+    healthcheck:
+      # CMD-SHELL, not the CMD array form: the array's eval expression gets
+      # re-split into separate argv items on the podman-compat path ("--eval
+      # try" + junk args -> the check can never pass, so rs.initiate() never
+      # runs). A single CMD-SHELL string goes through /bin/sh -c intact.
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'try { rs.status().ok } catch (e) { rs.initiate() }'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  core:
+    # Branch-built UI served by core exactly like production (spec §6.3):
+    # stage 1 = ui/Dockerfile's builder stage on this branch; stage 2 = the
+    # digest-pinned core image with the dist copied to /app/ui.
+    # Digest pinned in compose/oidc-dev/.env (KOMODO_CORE_IMAGE) — see README step 1.
+    build:
+      context: ..
+      dockerfile: compose/oidc-dev/core-ui.Dockerfile
+      args:
+        CORE_IMAGE: ${KOMODO_CORE_IMAGE}
+    image: komodo-oidc-dev-core
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      # Core's env var is KOMODO_DATABASE_URI (config: database.uri) — there is
+      # no KOMODO_DATABASE_URL; an unknown env is silently ignored and core
+      # falls back to database.address = localhost:27017 and dies on startup.
+      KOMODO_DATABASE_URI: mongodb://mongo:27017/komodo?replicaSet=rs0
+      KOMODO_HOST: https://komodo.oidctest.localhost
+      KOMODO_LOCAL_AUTH: "true"
+      KOMODO_OIDC_ENABLED: "false"        # flipped by Task 3's mounted config
+      KOMODO_OIDC_AUTO_REDIRECT: "false"  # pinned per spec §6 — M3/M6 discrimination
+      KOMODO_JWT_SECRET: oidc-dev-jwt-secret-not-for-production
+    ports:
+      - "9120:9120"
+    volumes:
+      - oidc-dev-config:/config
+      - ./oidc-dev/core-config.toml:/config/config.toml:ro
+      - oidc-dev-repo-cache:/config/repo-cache
+
+volumes:
+  oidc-dev-mongo:
+  oidc-dev-config:
+  oidc-dev-repo-cache:
