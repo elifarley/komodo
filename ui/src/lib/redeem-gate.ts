@@ -86,9 +86,10 @@ function safe<T>(fn: () => T, label: string): T | undefined {
 // The mogh token store, parsed exactly once per check (the key/schema live in
 // mogh_auth_client ^1.7.1's tokens.js — ONE reader here, so a shape change
 // upstream has one place to surface). Absence and corruption both yield
-// undefined; on a parse failure the RAW stored value is logged via safe()'s
-// label (labels only print on failure, so the happy path builds a short
-// string it never logs).
+// undefined; on a parse failure a redacted fingerprint (length + 8-char head
+// — NEVER the raw value, which can carry every stored jwt tail) is logged
+// with the key named, so support can identify the corruption class without
+// credentials riding in a pasted log (round-8 F-002).
 type MoghTokenStore = {
   current?: string;
   tokens?: Array<{ user_id: string; jwt: string }>;
@@ -105,17 +106,16 @@ function readMoghStore(): MoghTokenStore | undefined {
   // from literal "null" bytes. undefined (the read itself threw) was already
   // logged by safe()'s label above — quiet here too.
   if (raw === null || raw === undefined) return undefined;
-  const parsed = safe(
-    () => JSON.parse(raw),
-    `mogh token store parse (raw: ${raw})`,
-  );
-  // JSON.parse("null") SUCCEEDS and yields null; any non-object is equally
-  // not a store. These parses don't throw, so safe()'s label never fires —
-  // log the raw value HERE, with the key named so support can inspect
-  // storage without the source.
+  // safe()'s label deliberately carries NO raw value: labels print on
+  // failure, and a failure here is exactly the moment raw bytes could leak
+  // into a pasted support log. The redacted fingerprint below covers every
+  // path that reaches `return undefined` — a THROWING parse lands here via
+  // safe()'s undefined, and JSON.parse("null") lands here via the !parsed
+  // check without ever throwing.
+  const parsed = safe(() => JSON.parse(raw), "mogh token store parse");
   if (!parsed || typeof parsed !== "object") {
     console.error(
-      `redeem-gate: mogh token store parse for "${MOGH_TOKENS_KEY}" (raw: ${raw}) — JSON null/non-object is not a store; treating as corrupt`,
+      `redeem-gate: mogh token store for "${MOGH_TOKENS_KEY}" is not a store (JSON null/non-object/unparsable; raw length ${raw.length}, head ${JSON.stringify(raw.slice(0, 8))}) — treating as corrupt`,
     );
     return undefined;
   }
