@@ -340,10 +340,20 @@ The two-part transfer argument, stated correctly — and mooted by batch 2:
    prove the gap was real in a second scenario (not just `m1-seeded`); batch 2
    proves the fix closes it there too — zero fetch rows of any kind between the
    replay document load and the exchange dispatch.
-2. **Post-settlement:** `enabled = gateOpen && hasJwt` keeps the provider reads
-   off because the settlement hygiene (`LOGIN_TOKENS.remove_all`) empties the
-   store — `hasJwt` is false until a real login re-stores a token, so the
-   post-settlement assertions transfer across builds.
+2. **Post-settlement (SUPERSEDED by round-8 C-003):** this part originally
+   said reads stay off post-settlement because the settlement hygiene
+   (`LOGIN_TOKENS.remove_all`) empties the store. Round 8 removed that wipe:
+   it ran on EVERY failure path, so a failed redeem silently logged every
+   tab of the browser out of a perfectly valid pre-existing session (stale
+   `?redeem_ready=true` bookmark, replayed one-shot, watchdog on a
+   black-holed proxy) — and mogh's `add_and_change` is all-or-nothing, so
+   there was no partial state for it to clean. The post-fix contract:
+   post-settlement reads resume with whatever token the store holds. A
+   surviving VALID session yields authenticated 200s (which the
+   zero-residual predicate never counted); the batch-3 preservation oracle
+   asserts the survival itself (≥1 authed `/user` 200 strictly after the
+   settlement row — fail-closed, since an emptied store can produce no
+   authed request at all).
 
 Since part 1 was a live defect inside a † row's own scenario, no transfer was
 sound; the rows were re-run (batch 2), and batch 0's three rows are kept as
@@ -439,7 +449,8 @@ watchdog fired at doc+12105 ms and settled-failed the gate, the user landed on
 `/login` instead of spinning, and when the exchange finally returned 200 three
 seconds later, mogh_ui's own handler re-stored the token and the one-shot late-success
 redirect (fresh `ok` flag + jwt present in the store →
-`location.replace(backto ?? "/")`) recovered the login. Zero residual over the
+`location.replace(safeLocalPath(backto))`, origin-guarded per round-8
+C-001) recovered the login. Zero residual over the
 60 s window. (Batch 0 had already passed this row on the pre-pre-arm build —
 same three arms; the watchdog path was never pre-arm-sensitive, since the
 mutation's own settlement handles both.)
@@ -506,8 +517,7 @@ provider's FIRST render already sees the gate closed; the later real `onMutate`
 flip is idempotent (equality guard) and its watchdog arm a no-op (already set).
 Normal loads (no param) stay `idle`, byte-identical. The pre-armed watchdog is
 also defensive: if mogh_ui drift ever stopped firing the mutation, the window
-still converges to `settled-failed` (with its `remove_all` hygiene) within
-`WATCHDOG_MS`.
+still converges to `settled-failed` within `WATCHDOG_MS`.
 
 Companion checker fix in the same commit (verify.mjs, one predicate): the m1
 value arm's shim filter had matched ANY fetch row carrying the stale jwt tail
@@ -637,9 +647,11 @@ versions stock v2.3.3 resolves).
   5-per-15 s limiter attempts — see (d)).
 - Harness evidence (`exchange-error`, pre-fix): replayed 401 → no navigation for
   the whole 8 s observation, last LoadingScreen state `on` indefinitely (M5);
-  post-fix, komodo converges in-document (settled-failed → `/login`, exactly one
-  document load, zero residual over 60 s) — but the library still offers
-  embedders no failure path.
+  post-fix, komodo converges in-document (exactly one document load, zero
+  residual over 60 s; the endpoint depends on what the store holds —
+  `/login` with no surviving session, the app itself when a valid one
+  survives, per round-8 C-003's store neutrality) — but the library still
+  offers embedders no failure path.
 - Success-path semantics (`mogh_ui/dist/auth/utils.js`, `sanitizeQueryInner`):
   control flow = delete `redeem_ready|totp|passkey` from the query +
   `location.replace(origin+pathname+query)` — a **full-page reload** on every
@@ -705,11 +717,16 @@ express this):**
 - Code-verified (no harness scenario drives a hostile `backto`):
   `mogh_ui/dist/auth/login/index.js` `maybeNavigate` →
   `location.replace(new URLSearchParams(location.search).get("backto") ?? "/")`
-  — any absolute URL in `backto` navigates the user off-site after login, and
-  hosts inherit the shape (komodo's late-success redirect reads `backto` the
-  same way).
+  — any absolute URL in `backto` navigates the user off-site after login.
+  Komodo's own late-success call site now guards locally (round-8 C-001:
+  local-path-only + control-character rejection — note the parser strips
+  tab/newline BEFORE parsing and folds `\` to `/` for special schemes, so
+  naive second-character guards are bypassable via `/%09//evil.example`;
+  validating the raw string certifies a string the parser never sees), but
+  mogh_ui's `maybeNavigate` remains unvalidated for every embedder.
 - Ask: same-origin validation (or relative-path-only) upstream, so every
-  embedder inherits the fix.
+  embedder inherits the fix — komodo's local guard is compensation, not the
+  fix.
 
 ### One-line ask (not drafted)
 
