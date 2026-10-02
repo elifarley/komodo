@@ -4,8 +4,8 @@
 //
 // Usage:
 //   node verify.mjs <scenario> [--post-fix]
-//     scenario: success | latency | m1-seeded | m2-forced | exchange-error | hung |
-//               isolation | all
+//     scenario: success | latency | m1-seeded | m2-forced | m2-seeded |
+//               exchange-error | hung | isolation | all
 //     --post-fix  additionally enforces the FIX-DEPENDENT assertions (the
 //                 post-fix arms in README's row->scenario map). Default OFF:
 //                 pre-fix runs must PASS on the
@@ -88,9 +88,27 @@ const GIT_HEAD = (() => {
   return r.stdout.trim();
 })();
 const DIRTY_COUNT = (() => {
+  // Pathspec = the MERGE SURFACE the run actually exercises, not just the
+  // fix's source dir (round-9 C-002): `ui` (the bundle's whole input tree —
+  // package.json/yarn.lock/vite config feed core-ui.Dockerfile stage 1, not
+  // only ui/src), `client/core/ts` (the yarn-linked client package the same
+  // stage builds), `compose` (the stack topology: oidc-dev.compose.yaml sits
+  // OUTSIDE compose/oidc-dev/), and .dockerignore (it decides what enters
+  // the build context). node_modules/dist are gitignored and never trip
+  // this. Acknowledged residual: the digest-pinned core image in
+  // gitignored .env is outside any SHA — README documents it as a manual
+  // step.
   const r = spawnSync(
     "git",
-    ["status", "--porcelain", "--", "ui/src", "compose/oidc-dev"],
+    [
+      "status",
+      "--porcelain",
+      "--",
+      "ui",
+      "client/core/ts",
+      "compose",
+      ".dockerignore",
+    ],
     { cwd: REPO_ROOT, encoding: "utf8" },
   );
   if (r.status !== 0) {
@@ -101,7 +119,7 @@ const DIRTY_COUNT = (() => {
   const dirty = r.stdout.split("\n").filter((l) => l.trim());
   if (dirty.length > 0 && !process.env.VERIFY_ALLOW_DIRTY) {
     throw new Error(
-      `evidence binding (F-001): refusing to run — the asserted trees are dirty, so a stamped SHA would not certify what actually ran:\n` +
+      `evidence binding (F-001): refusing to run — the merge-surface trees (ui, client/core/ts, compose, .dockerignore) are dirty, so a stamped SHA would not certify what actually ran:\n` +
         dirty.map((l) => `  ${l}`).join("\n") +
         `\ncommit first (the run protocol in BASELINE.md is: commit -> build -> run -> record). ` +
         `Dev iterations may set VERIFY_ALLOW_DIRTY=1 to proceed with the dirt stamped into the evidence.`,
@@ -251,7 +269,13 @@ const unauthOrFail = (e) => {
   const auth = authPresent(e);
   if (!auth && reqUri(e).startsWith("/auth/login/")) return false;
   const st = statusOf(e);
-  return !auth || st === 401 || st === 403 || (st >= 500 && auth);
+  // 429 is the per-IP limiter's own rejection (upstream draft (d) — the
+  // endpoint of the "re-fired exchanges burn the budget into 429s"
+  // narrative this suite exists to stop): a 429-only tail must count as
+  // bad rows, not pass every disjunct silently (round-9 C-005).
+  return (
+    !auth || st === 401 || st === 403 || st === 429 || (st >= 500 && auth)
+  );
 };
 
 // ---------------------------------------------------------------------------
@@ -662,10 +686,14 @@ async function flushWsRow(context) {
 }
 
 // Zero-residual window (failure rows): zero unauth-or-401/403-or-auth-5xx app requests and
-// zero FAILED ws handshakes (status != 101) in the 60s AFTER settlement — the
+// zero FAILED ws rows (status != 101) in the 60s AFTER settlement — the
 // settlement row itself is excluded (strict >): the replayed exchange 401 IS
 // the settlement, and mogh_ui attaches the still-stored jwt to it, so counting
 // it would fail the post-fix run on the correct implementation's own row.
+// Round-9 C-006: the ws half is only meaningful when the scenario FLUSHES the
+// connection at close (the /ws/update row is written at close) — success,
+// latency, exchange-error, and hung all do; a healthy OPEN connection writes
+// no row at all, so "failed ws rows: 0" without a flush is vacuous.
 function residualRows(log, settlementSec, seconds = 60) {
   const rows = log.filter(
     (e) =>
@@ -832,21 +860,29 @@ SCENARIOS["m1-seeded"] = { delayMs: 1500, run: async ({ rows, log }) => {
 // installed pre-drive: the exchange fires DURING the drive's second-entry
 // cascade, so a route added after drive() never sees it (observed: the real
 // jwt landed and the "drop" silently became a success row).
-SCENARIOS["m2-forced"] = {
-  preDrive: (context) =>
-    context.route("**/auth/login/ExchangeForJwt", async (route) => {
-      // Fetch the REAL upstream response, rewrite body.jwt to a structurally
-      // valid sub-less jwt, fulfill. The wire still shows the true 200; the
-      // PAGE sees the dropped token.
-      const resp = await route.fetch();
-      let body = {};
-      try {
-        body = await resp.json();
-      } catch {}
-      if (body && typeof body === "object") body.jwt = SUBLESS_JWT;
-      await route.fulfill({ response: resp, json: body });
-    }),
-  run: async ({ page, rows, log }) => {
+// ---------------------------------------------------------------------------
+// m2 drive (shared): route-intercept the exchange and rewrite body.jwt to a
+// structurally valid sub-less jwt. The wire still shows the true 200; the
+// PAGE sees the dropped token. Run twice (round-9 C-003): session-less
+// (`m2-forced`) and with a pre-existing session (`m2-seeded`) — the
+// session-less shape is the only one the round-7 classifier handled; the
+// seeded shape is the population its drift guard misread as key-drift.
+// ---------------------------------------------------------------------------
+const m2RouteHook = (context) =>
+  context.route("**/auth/login/ExchangeForJwt", async (route) => {
+    // Fetch the REAL upstream response, rewrite body.jwt to a structurally
+    // valid sub-less jwt, fulfill. The wire still shows the true 200; the
+    // PAGE sees the dropped token.
+    const resp = await route.fetch();
+    let body = {};
+    try {
+      body = await resp.json();
+    } catch {}
+    if (body && typeof body === "object") body.jwt = SUBLESS_JWT;
+    await route.fulfill({ response: resp, json: body });
+  });
+
+const m2Checks = async ({ page, rows, log, seeded }) => {
   const ex = await waitForLog(
     (e) => reqUri(e).includes("ExchangeForJwt") && statusOf(e) === 200,
     30_000,
@@ -875,9 +911,14 @@ SCENARIOS["m2-forced"] = {
       () => finalUrl.pathname.startsWith("/login"),
     ),
     // FIX-DEPENDENT (the silent drop now surfaces): the drop flag surfaced on
-    // the login page ("session could not be stored" notification / sessionStorage flag).
+    // the login page. STRICT PHASE (round-9 C-001): mere flag-presence
+    // accepted a stale "ok" phase — an unconsumed "ok" on /login is exactly
+    // the signature of a classifier that failed to verdict "drop" (the ok
+    // branch consumes its flag BEFORE navigating), so presence-only made
+    // this arm unable to detect its own failure mode. Phase must be "drop"
+    // (or the toast text, when sessionStorage is degraded).
     check(
-      "post-fix: drop flag surfaced in-document on the login page",
+      "post-fix: drop flag surfaced in-document on the login page (phase drop)",
       async () => {
         const u = new URL(page.url());
         if (!u.pathname.startsWith("/login")) {
@@ -885,24 +926,93 @@ SCENARIOS["m2-forced"] = {
         }
         const surfaced = await page.evaluate(() => {
           const flag = sessionStorage.getItem("komodo-redeem");
-          return (
-            (flag && JSON.parse(flag).phase) ??
-            (/session could not be stored/i.test(document.body.innerText)
-              ? "notification"
-              : null)
-          );
+          if (flag) {
+            try {
+              if (JSON.parse(flag).phase === "drop") return "drop";
+            } catch {
+              // unparsable flag is not evidence of surfacing
+            }
+          }
+          return /session could not be stored/i.test(document.body.innerText)
+            ? "notification"
+            : null;
         });
-        if (!surfaced) throw new Error("no komodo-redeem flag and no notification text");
+        if (!surfaced)
+          throw new Error(
+            "drop not surfaced: no phase-drop flag and no notification text (an ok-phase flag here means the classifier failed to verdict drop)",
+          );
         return true;
       },
       { fixDependent: true },
     ),
   ];
+  if (seeded) {
+    // Round-9 C-003 coverage: the drop must verdict and surface even with a
+    // pre-existing session, and the drop path must remain store-neutral —
+    // the seeded session survives untouched (a drop writes nothing).
+    checks.push(
+      check(
+        "post-fix: drop surfaced WITH a pre-existing session (round-9 C-003 population)",
+        async () => {
+          const u = new URL(page.url());
+          if (!u.pathname.startsWith("/login")) {
+            throw new Error(`expected /login, at ${u.pathname}`);
+          }
+          const surfaced = await page.evaluate(() => {
+            const flag = sessionStorage.getItem("komodo-redeem");
+            if (flag) {
+              try {
+                return JSON.parse(flag).phase === "drop";
+              } catch {
+                return false;
+              }
+            }
+            return false;
+          });
+          if (!surfaced)
+            throw new Error(
+              "no phase-drop flag with a pre-existing session — the classifier misread the old closure token as drift (round-9 C-003 regression)",
+            );
+          return true;
+        },
+        { fixDependent: true },
+      ),
+      check(
+        "pre-existing (seeded) session preserved through the silent drop (store neutrality)",
+        () =>
+          rows.every((r) => {
+            if (r.kind !== "tokens" || !r.detail || !r.detail.includes("{"))
+              return true;
+            try {
+              const store = JSON.parse(
+                r.detail.slice(r.detail.indexOf("{")),
+              );
+              return (
+                !store ||
+                store.current == null ||
+                store.current === "stale-user"
+              );
+            } catch {
+              return true; // unparsable row is not evidence of a transition
+            }
+          }),
+      ),
+    );
+  }
   return { checks };
-  },
 };
 
-SCENARIOS["exchange-error"] = { run: async ({ page, rows, log }) => {
+SCENARIOS["m2-forced"] = {
+  preDrive: m2RouteHook,
+  run: async (ctx) => m2Checks({ ...ctx, seeded: false }),
+};
+
+SCENARIOS["m2-seeded"] = {
+  preDrive: m2RouteHook,
+  run: async (ctx) => m2Checks({ ...ctx, seeded: true }),
+};
+
+SCENARIOS["exchange-error"] = { run: async ({ context, page, rows, log }) => {
   // 1) a full successful login (settles on the dashboard), then 2) replay
   // /?redeem_ready=true: the pending login state is ONE-SHOT, so the fired
   // exchange 401s (and burns one of the 5 auth-limiter attempts).
@@ -936,6 +1046,14 @@ SCENARIOS["exchange-error"] = { run: async ({ page, rows, log }) => {
   await sleep(8_000); // N=8s no-navigation observation (pre-fix eternal spinner)
   const urlAtObserve = new URL(page.url());
   await sleep(60_000); // the zero-residual window itself — OBSERVE it (C-018)
+  // Flush the ws row BEFORE the verdict (round-9 C-006): the /ws/update row
+  // is written when the connection CLOSES, so without a close, "failed ws
+  // rows: 0" is vacuous — a healthy open connection writes no row at all.
+  // Closing the context here flushes the preserved-session ws as 101
+  // (asserted positively below); a genuinely FAILED upgrade writes its
+  // non-101 row at failure time, inside the window, where residualRows
+  // counts it.
+  await flushWsRow(context);
   const residual = residualRows(log, settleSec, 60);
   // Round-8 C-003: the leg-1 session must SURVIVE the failed settlement.
   // Fail-closed against reintroducing the wipe: with the store emptied, no
@@ -999,13 +1117,31 @@ SCENARIOS["exchange-error"] = { run: async ({ page, rows, log }) => {
       { fixDependent: true },
     ),
     check(
-      `zero-residual 60s window (unauth-or-401/403-or-auth-5xx app rows: ${residual.count}; failed ws handshakes: ${residual.wsFails})`,
+      `zero-residual 60s window (unauth-or-401/403-or-auth-5xx app rows: ${residual.count}; failed ws rows (flushed at close): ${residual.wsFails})`,
       () => residual.count === 0 && residual.wsFails === 0,
       { fixDependent: true },
     ),
     check(
       `post-fix: leg-1 session preserved through the failed settlement (authenticated /user 200 after ts=${settleSec.toFixed(3)}; observed ${preserved.length})`,
       () => preserved.length >= 1,
+      { fixDependent: true },
+    ),
+    check(
+      "post-fix: update websocket connected on the preserved session (101 flushed at close)",
+      () => {
+        const row = log.find(
+          (e) =>
+            reqUri(e) === "/ws/update" &&
+            statusOf(e) === 101 &&
+            logSec(e) > settleSec,
+        );
+        if (!row) {
+          throw new Error(
+            "no /ws/update 101 row after settlement — flushWsRow should have flushed the connection at close (round-9 C-006: without the flush this term was vacuous)",
+          );
+        }
+        return true;
+      },
       { fixDependent: true },
     ),
   ];
@@ -1016,7 +1152,7 @@ SCENARIOS["exchange-error"] = { run: async ({ page, rows, log }) => {
   },
 };
 
-SCENARIOS.hung = { delayMs: 15_000, run: async ({ page, rows, log, delayMs }) => {
+SCENARIOS.hung = { delayMs: 15_000, run: async ({ context, page, rows, log, delayMs }) => {
   // DELAY_AUTH_MS=15000 — past the fix's 12s watchdog. PRE-FIX REALITY
   // (verified): there is no watchdog, so the LoadingScreen persists for the
   // FULL delay and the late 200 then stores the token and sanitize-reloads to
@@ -1044,6 +1180,11 @@ SCENARIOS.hung = { delayMs: 15_000, run: async ({ page, rows, log, delayMs }) =>
       r.ts_ms < exMs,
   );
   await sleep(60_000); // post-settlement zero-residual window (observed)
+  // Capture the landing BEFORE flushWsRow closes the context (round-9 C-006 —
+  // page.url() on a closed page throws), then flush: the /ws/update row is
+  // written at close, so without it "failed ws: 0" was vacuous.
+  const finalUrlAtEnd = new URL(page.url());
+  await flushWsRow(context);
   const residual = residualRows(log, logSec(ex), 60);
   const checks = [
     check(
@@ -1065,14 +1206,32 @@ SCENARIOS.hung = { delayMs: 15_000, run: async ({ page, rows, log, delayMs }) =>
       () => Date.now() - exMs >= 20_000, // guaranteed by the 60s residual window above
     ),
     check(
-      `post-fix: zero-residual 60s window after the watchdog settlement (unauth-or-401/403-or-auth-5xx: ${residual.count}; failed ws: ${residual.wsFails})`,
+      `post-fix: zero-residual 60s window after the watchdog settlement (unauth-or-401/403-or-auth-5xx: ${residual.count}; failed ws rows (flushed at close): ${residual.wsFails})`,
       () => residual.count === 0 && residual.wsFails === 0,
+      { fixDependent: true },
+    ),
+    check(
+      "post-fix: update websocket connected after the late-success recovery (101 flushed at close)",
+      () => {
+        const row = log.find(
+          (e) =>
+            reqUri(e) === "/ws/update" &&
+            statusOf(e) === 101 &&
+            logSec(e) > logSec(ex),
+        );
+        if (!row) {
+          throw new Error(
+            "no /ws/update 101 row after the late 200 — flushWsRow should have flushed the recovered session's connection at close (round-9 C-006)",
+          );
+        }
+        return true;
+      },
       { fixDependent: true },
     ),
     check(
       `post-fix: watchdog converges (gate drops -> /login, then the late-success redirect recovers)`,
       async () => {
-        const u = new URL(page.url());
+        const u = finalUrlAtEnd;
         // Watchdog fired at ~12s while the exchange was still in flight; the
         // late 200 (t≈15s) then stores the token and reloads — the one-shot
         // must send the user on to `/` (never left stranded mid-gate).
@@ -1169,7 +1328,8 @@ async function runScenario(name) {
     tailer.start();
     browser = await chromium.launch();
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
-    if (name === "m1-seeded") await seedStaleToken(context); // BEFORE the shim so its initial report shows the seed
+    if (name === "m1-seeded" || name === "m2-seeded")
+      await seedStaleToken(context); // BEFORE the shim so its initial report shows the seed
     await attachShim(context); // BEFORE any navigation
     const page = await context.newPage();
     attachConsole(page, rows);
@@ -1227,6 +1387,7 @@ const ALL = [
   "latency",
   "m1-seeded",
   "m2-forced",
+  "m2-seeded",
   "exchange-error",
   "hung",
   "isolation",
