@@ -23,11 +23,23 @@
 //      returns the `(req, res)` handler. Calling it once and reusing the
 //      handler avoids rebuilding the compose chain per request.
 import Provider from "oidc-provider";
+import crypto from "node:crypto";
 import http from "node:http";
 
 const issuer = process.env.MOCK_ISSUER ?? "https://portal.oidctest.localhost";
+// Browser-facing origin of the komodo RP. The host port is 8443 because the
+// harness host cannot publish 443 (rootless podman) — see README "Deviations".
+const komodoOrigin =
+  process.env.KOMODO_ORIGIN ?? "https://komodo.oidctest.localhost:8443";
 
-const provider = new Provider(issuer, {
+// Task-3 reality: oidc-provider v9 derives every discovered endpoint URL from
+// the REQUEST origin (helpers/oidc_context.js urlFor -> `this.ctx.href`), and
+// Koa derives scheme/host from the socket unless app.proxy is set. Behind
+// Caddy the socket is plain http, so without proxy=true discovery would hand
+// the browser `http://portal...` URLs while the issuer (and this harness's
+// published port) are https — the authorize redirect would hit a TLS listener
+// in plaintext. proxy=true makes Koa honor Caddy's X-Forwarded-Proto/-Host.
+const providerConfig = {
   // Session cookie MUST be a parent-domain cookie: host-only for
   // portal.oidctest.localhost would never reach komodo.oidctest.localhost, so
   // Caddy's forward_auth subrequest would 401 EVERY komodo request, including
@@ -41,7 +53,17 @@ const provider = new Provider(issuer, {
       client_id: "komodo-harness",
       // Throwaway harness secret — never use it outside compose/oidc-dev.
       client_secret: "komodo-harness-secret",
-      redirect_uris: ["https://komodo.oidctest.localhost/auth/oidc/callback"],
+      // Second URI: /dev on the portal itself. The /verify gate's unauth
+      // redirect (see VERIFY_LOGIN_URL below) sends users through THIS
+      // authorize request, so after the portal login they land back on the
+      // portal — NOT on komodo's callback. That matters: a gateway-initiated
+      // authorize carries a throwaway PKCE challenge, so a code delivered to
+      // komodo's callback could never be exchanged by komodo (verifier
+      // mismatch). The real login always starts at komodo's /auth/oidc/login.
+      redirect_uris: [
+        `${komodoOrigin}/auth/oidc/callback`,
+        `${new URL("/dev", issuer).href}`,
+      ],
       grant_types: ["authorization_code"],
       response_types: ["code"],
       token_endpoint_auth_method: "client_secret_basic",
@@ -73,10 +95,44 @@ const provider = new Provider(issuer, {
     await grant.save();
     return grant;
   },
-});
+};
+
+const provider = new Provider(issuer, providerConfig);
+provider.proxy = true;
 
 // Koa's callback() returns the request handler; build it once.
 const providerHandler = provider.callback();
+
+// Unauthenticated-navigation redirect target for /verify (forward_auth gate).
+// A fixed throwaway PKCE pair: the gateway-initiated authorize can never
+// complete komodo's token exchange (komodo mints its own verifier), so the
+// challenge only needs to be a well-formed S256 challenge — it exists to get
+// the user onto the dev-interaction login page, where the portal session
+// cookie is established.
+const THROWAWAY_VERIFIER =
+  "harness-throwaway-verifier-0123456789abcdefghijklmnopqrstuv";
+const THROWAWAY_CHALLENGE = "-PjgkcO7j7VjW0Eq1W1GXzwSQqdb76oR4YVsn1Iu-QQ";
+const VERIFY_LOGIN_URL = (() => {
+  const u = new URL("/auth", issuer);
+  u.search = new URLSearchParams({
+    client_id: "komodo-harness",
+    response_type: "code",
+    scope: "openid email profile",
+    redirect_uri: new URL("/dev", issuer).href,
+    code_challenge: THROWAWAY_CHALLENGE,
+    code_challenge_method: "S256",
+    state: "verify-redirect",
+    nonce: "verify-redirect",
+  }).toString();
+  return u.href;
+})();
+// Boot-time sanity check: the hardcoded challenge must really be S256(verifier).
+if (
+  THROWAWAY_CHALLENGE !==
+  crypto.createHash("sha256").update(THROWAWAY_VERIFIER).digest().toString("base64url")
+) {
+  throw new Error("THROWAWAY_CHALLENGE does not match THROWAWAY_VERIFIER (S256)");
+}
 
 http
   .createServer(async (req, res) => {
@@ -90,9 +146,19 @@ http
     } catch {
       return res.writeHead(400).end("bad request");
     }
+    if (url.pathname === "/dev") {
+      // Landing for the /verify gate's unauth redirect (redirect_uri of the
+      // throwaway authorize). The code query param is minted but unusable by
+      // design — this page just confirms the portal session exists.
+      return res
+        .writeHead(200, { "content-type": "text/plain" })
+        .end(
+          "harness: portal session established — return to komodo.oidctest.localhost\n",
+        );
+    }
     if (url.pathname === "/verify") {
       // Honest failures: lookup ERROR is 503 (provider/API problem), absence
-      // of session is 401. Caddy's access log then discriminates them.
+      // of session is 401-or-302. Caddy's access log then discriminates them.
       // `{ req, res }` is the raw-pair shape Session.get supports
       // (see module header, note 1). A missing cookie never throws —
       // Session.get returns an empty Session (accountId undefined) — so the
@@ -105,6 +171,19 @@ http
         return res.writeHead(503).end("lookup error");
       }
       if (session && session.accountId) return res.writeHead(200).end("ok");
+      // AC2 of the caddy task: an unauthenticated BROWSER navigation must be
+      // bounced to the portal (a bare 401 would strand the user and mean the
+      // gate is misconfigured). Distinguish navigation from everything else
+      // by X-Forwarded-Method, which Caddy's forward_auth subrequest always
+      // carries — a direct probe (`curl /verify` with no proxy headers) still
+      // gets the Task-2-documented 401. Non-navigations (the ExchangeForJwt
+      // POST, API calls) also 401 so XHR sees a clean status instead of
+      // following a redirect into the portal's HTML.
+      const fwdMethod = req.headers["x-forwarded-method"];
+      if (fwdMethod && /^(GET|HEAD)$/i.test(String(fwdMethod))) {
+        console.warn("verify: no session for navigation, redirecting to portal");
+        return res.writeHead(302, { Location: VERIFY_LOGIN_URL }).end();
+      }
       console.warn("verify: no session for request");
       return res.writeHead(401).end("unauthorized");
     }
