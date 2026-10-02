@@ -89,15 +89,28 @@ function readMoghStore(): MoghTokenStore | undefined {
     () => localStorage.getItem(MOGH_TOKENS_KEY),
     "mogh token store read",
   );
-  return safe(
-    () => (raw ? (JSON.parse(raw) as MoghTokenStore) : undefined),
+  const parsed = safe(
+    () => (raw ? JSON.parse(raw) : undefined),
     `mogh token store parse (raw: ${raw})`,
   );
+  // JSON.parse("null") SUCCEEDS and yields null — and the drift clause below
+  // dereferences store.tokens outside safe(), so a null here would throw in
+  // the cache subscription (skipping the settled-ok flip). Any non-object is
+  // equally not a store: fold both into the corruption path. safe()'s label
+  // never fires on these (they don't throw), so log the raw value HERE.
+  if (!parsed || typeof parsed !== "object") {
+    console.error(
+      `redeem-gate: mogh token store parse (raw: ${raw}) — JSON null/non-object is not a store; treating as corrupt`,
+    );
+    return undefined;
+  }
+  return parsed as MoghTokenStore;
 }
 
 /** Schema-shaped presence check: the store parsed and holds a token entry. */
 export function hasStoredJwt(): boolean {
-  return (readMoghStore()?.tokens?.length ?? 0) > 0;
+  const store = readMoghStore();
+  return Array.isArray(store?.tokens) && store.tokens.length > 0;
 }
 
 // PRE-ARM: mogh_ui fires the redeem during ROUTER's

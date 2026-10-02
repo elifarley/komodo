@@ -714,7 +714,8 @@ express this):**
 ### One-line ask (not drafted)
 
 - mogh_ui: consider exporting the token-store key and redeem lifecycle seams so
-  hosts can unit-test redeem integrations without a full harness.
+  hosts can unit-test redeem integrations without a full harness (store shape:
+  `{ current, tokens: [{ user_id, jwt }] }`).
 
 ---
 
