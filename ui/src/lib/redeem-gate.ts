@@ -2,10 +2,10 @@ import { useSyncExternalStore } from "react";
 import type { MutationCacheConfig, QueryClient } from "@tanstack/react-query";
 import { MoghAuth } from "komodo_client";
 
-// Redeem lifecycle (spec §7.1). "idle" means OPEN everywhere: only a document
+// Redeem lifecycle. "idle" means OPEN everywhere: only a document
 // that itself arms the redeem mutation can leave idle, so every gate keyed on
 // `!== "pending"` behaves exactly like today on normal page loads.
-// Delivery fact (spec §4): cache listeners run synchronously inside the
+// Delivery fact (react-query internals): cache listeners run synchronously inside the
 // dispatch's task — a render-phase dispatch notifies zero effect-scoped
 // subscribers, deterministically. Arming uses the config hooks, which run
 // inside execute regardless.
@@ -15,13 +15,13 @@ const REDEEM_KEY = "ExchangeForJwt";
 // Browser fetch has no default timeout — without this bound a black-holing
 // proxy would leave the gate "pending" forever.
 const WATCHDOG_MS = 12_000;
-// "Just over the watchdog": §7.7's redirect accepts only a fresh flag, and the
-// settlement-time rewrite restarts the TTL (§7.3), so freshness measures from
-// the last confirmed settlement, not the original arm.
+// "Just over the watchdog": the late-success redirect accepts only a fresh
+// flag, and the settlement-time rewrite restarts the flag TTL, so freshness
+// measures from the last confirmed settlement, not the original arm.
 const FLAG_TTL_MS = 15_000;
 const FLAG_KEY = "komodo-redeem";
-// Exported so login.tsx's §7.7 jwt-presence check reads the same key the M2
-// check here writes/reads — one source of truth for the mogh storage key.
+// Exported so login.tsx's jwt-presence check reads the same key the silent
+// token drop check here writes/reads — one source of truth for the mogh storage key.
 export const MOGH_TOKENS_KEY = "mogh-auth-tokens-v1"; // mogh_auth_client 1.7.1 tokens.js:5
 
 let state: RedeemState = "idle";
@@ -39,8 +39,9 @@ const subscribe = (cb: () => void) => {
 
 // mutationKey is `readonly unknown[]` (query-core MutationKey) — readonly is
 // load-bearing: a mutable `unknown[]` here fails structural assignability.
-const isExchange = (m: { options?: { mutationKey?: readonly unknown[] } } | undefined) =>
-  m?.options?.mutationKey?.[0] === REDEEM_KEY;
+const isExchange = (
+  m: { options?: { mutationKey?: readonly unknown[] } } | undefined,
+) => m?.options?.mutationKey?.[0] === REDEEM_KEY;
 
 function setState(next: RedeemState) {
   if (state === next) return;
@@ -61,7 +62,7 @@ function setState(next: RedeemState) {
 
 // Exception-free helper: mutation.cjs awaits config onSuccess BEFORE mogh_ui's
 // token write with no per-hook guard (only the error-path hooks are wrapped) —
-// a throw here converts a 200 exchange into the failure path (manufactured M2).
+// a throw here converts a 200 exchange into the failure path (a silent drop).
 function safe<T>(fn: () => T, label: string): T | undefined {
   try {
     return fn();
@@ -71,7 +72,7 @@ function safe<T>(fn: () => T, label: string): T | undefined {
   }
 }
 
-// PRE-ARM (spec §7.1 addendum): mogh_ui fires the redeem during ROUTER's
+// PRE-ARM: mogh_ui fires the redeem during ROUTER's
 // render — a CHILD of WebsocketProvider, whose gated reads commit
 // enabled=true before any child-render flip can exist (React renders
 // parent-first). Initializing pending at module scope closes that gap:
@@ -102,22 +103,26 @@ const sessionStorageOk =
     return true;
   }, "sessionStorage probe") === true;
 
-// Single evidence flag (spec §7.3): never carries the raw jwt.
+// Single evidence flag (the evidence-flag contract): never carries the raw jwt.
 type RedeemFlag = { t: number; phase: "ok" | "drop" };
 
 function writeFlag(phase: RedeemFlag["phase"]) {
   if (!sessionStorageOk) {
-    // Degraded mode (§7.3 + §8's M2 row): this module IS the drop detector, so
+    // Degraded mode: this module IS the drop detector, so
     // the drop verdict must still surface — console-only signal, then skip.
     if (phase === "drop") {
       console.error(
-        "redeem-gate: exchange 200'd but jwt not stored (M2); sessionStorage unavailable — console-only signal",
+        "redeem-gate: exchange 200'd but jwt not stored (silent drop); sessionStorage unavailable — console-only signal",
       );
     }
     return;
   }
   safe(
-    () => window.sessionStorage.setItem(FLAG_KEY, JSON.stringify({ t: Date.now(), phase })),
+    () =>
+      window.sessionStorage.setItem(
+        FLAG_KEY,
+        JSON.stringify({ t: Date.now(), phase }),
+      ),
     "flag write",
   );
 }
@@ -167,7 +172,7 @@ export function createRedeemGateHooks(): MutationCacheConfig {
           watchdog = setTimeout(() => {
             watchdog = undefined;
             // Fail-safe convergence; a late success still recovers via
-            // mogh_ui's own handler + the login-page redirect (§7.7).
+            // mogh_ui's own handler + the login-page redirect.
             setState("settled-failed");
           }, WATCHDOG_MS);
         }
@@ -189,21 +194,26 @@ export function initRedeemGate(client: QueryClient) {
     // … | SuccessAction) — narrow it; the previous `{ type?: string } |
     // undefined` cast claimed action could be absent, which the .d.ts rules out.
     if (event.action.type === "success") {
-      // Fires AFTER mogh_ui's onSuccess. M2 check: did storage gain the jwt?
-      // action.data is the exact success-dispatch payload (identical to
-      // mutation.state.data per mutation.cjs's success reducer).
+      // Fires AFTER mogh_ui's onSuccess. Silent-drop check: did storage gain
+      // the jwt? action.data is the exact success-dispatch payload (identical
+      // to mutation.state.data per mutation.cjs's success reducer).
       const jwt = (event.action.data as { jwt?: string } | undefined)?.jwt;
       let stored = false;
       if (jwt) {
-        // §7.3: on parse failure log the RAW stored value, not just the
+        // On parse failure log the RAW stored value, not just the
         // SyntaxError. safe()'s label interpolates it, and a label only prints
         // on failure — the happy path builds a short string it never logs.
-        const raw = safe(() => localStorage.getItem(MOGH_TOKENS_KEY), "M2 storage read");
+        const raw = safe(
+          () => localStorage.getItem(MOGH_TOKENS_KEY),
+          "silent-drop storage read",
+        );
         stored =
           safe(() => {
-            const parsed = raw ? (JSON.parse(raw) as { tokens?: Array<{ jwt: string }> }) : undefined;
+            const parsed = raw
+              ? (JSON.parse(raw) as { tokens?: Array<{ jwt: string }> })
+              : undefined;
             return parsed?.tokens?.some((t) => t.jwt === jwt) === true;
-          }, `M2 parse (raw: ${raw})`) === true;
+          }, `silent-drop parse (raw: ${raw})`) === true;
       }
       writeFlag(jwt && !stored ? "drop" : "ok"); // refresh t: late-success TTL runs from here
       setState("settled-ok");

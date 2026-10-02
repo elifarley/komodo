@@ -140,8 +140,9 @@ const API_RE = /^\/(user|read|execute|write|ws|auth\/login)(\/|$)/;
 const isApi = (e) => isKomodoRow(e) && API_RE.test(reqUri(e));
 
 const headerVal = (e, name, which = "request") => {
-  // Field reality (Task 4 Step 4): requests nest under `request.headers`, but
-  // responses use `resp_headers` DIRECTLY as the header map (no extra level).
+  // Field reality (observed during the suite's build): requests nest under
+  // `request.headers`, but responses use `resp_headers` DIRECTLY as the header
+  // map (no extra level).
   const headers = which === "request" ? e?.request?.headers ?? {} : e?.resp_headers ?? {};
   for (const k of Object.keys(headers)) {
     if (k.toLowerCase() === name) {
@@ -1148,7 +1149,8 @@ if (SCEN === "all") {
   }
   console.log(`\nALL SCENARIOS ${allPass ? "PASS" : "FAIL"}`);
   // exitCode + natural exit (not process.exit): a hard exit can truncate
-  // buffered stdout when the output is piped, and Task 5 parses these lines.
+  // buffered stdout when the output is piped, and the baseline runs parse
+  // these lines.
   process.exitCode = allPass ? 0 : 1;
 } else {
   const pass = await runScenario(SCEN);

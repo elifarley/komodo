@@ -1,19 +1,19 @@
-# Pre-fix baseline — mechanisms reproduced (Task 5, PHASE-1 GATE)
+# Pre-fix baseline — mechanisms reproduced (fresh runs, gate passed)
 
 - **Date:** 2026-10-02 (batch runs 00:10:04–00:16:16, host local time -03:00;
   `exchange-error` re-run at 00:30:25 — provenance note in its section)
 - **Suite commit / HEAD:** `fa53da3c0` — `compose/oidc-dev/verify.mjs` exactly as
   committed there (no local edits); branch `komodo-oidc-login-jwt-redeem-race-fix-1665`
 - **UI under test:** **stock v2.3.3** — last commit touching `ui/` is the `v2.3.3`
-  tag commit itself (`780ac68b9`); the branch carries no §7 code yet (Phase 2 not
-  started). Core image = digest-pinned `ghcr.io/moghtech/komodo-core@sha256:bca73d0e…`
+  tag commit itself (`780ac68b9`); the branch carries no §7 code yet (fix
+  implementation not started). Core image = digest-pinned `ghcr.io/moghtech/komodo-core@sha256:bca73d0e…`
   (tag `2.3.3`).
 - **Harness origin:** podman shim (`DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`
   + standalone `docker-compose`); all browser-facing origins carry `:8443`
   (rootless podman cannot publish privileged ports — README §Deviations 1). Mongo 8,
   core (branch UI build), oidc-mock (`oidc-provider@9.12.2`), Caddy 2.11, delay sidecar.
-- **Method:** all 7 scenarios re-run **fresh** for this baseline (Task 4's cached
-  `out/*.ndjson` moved aside before the first run — none of the excerpts below is a
+- **Method:** all 7 scenarios re-run **fresh** for this baseline (the verify suite's
+  cached `out/*.ndjson` moved aside before the first run — none of the excerpts below is a
   cached read). Individual runs, ≥16 s apart (per-IP auth limiter 5 attempts/15 s;
   `all` mode's spacing, applied manually). Every scenario printed
   `SCENARIO <name> PASS` with exit 0; FIX-DEPENDENT checks report `SKIP` pre-fix by
@@ -25,12 +25,12 @@
   are dropped from the middle of a row. Never elided: `url`, `status`, `auth`, and any
   timestamp the surrounding text cites.
 
-**Gate verdict: ≥1 mechanism reproduced (M1, M2, M5) → PROCEED to Phase 2 (Tasks 6–10).**
+**Gate verdict: ≥1 mechanism reproduced (M1, M2, M5) → PROCEED to the fix implementation.**
 
-> **Task 11 post-fix results:** the second half of this document (same harness,
-> `--post-fix` enforced, branch UI) is the "Post-fix run (Task 11)" section at
+> **Post-fix results:** the second half of this document (same harness,
+> `--post-fix` enforced, branch UI) is the "Post-fix run" section at
 > the bottom — **all seven scenarios green**. `m1-seeded` reached green only via
-> the `641f966da` pre-arm fix, which Task 11's first post-fix run exposed
+> the `641f966da` pre-arm fix, which the first post-fix run exposed
 > (FAIL → root cause → fix → PASS; resolution below), and the upstream issue
 > drafts close the section.
 
@@ -195,7 +195,7 @@ A failing **non-redeem** execute (`POST /execute/StartDeployment` → 500) fired
 the stored jwt does not flip the gate, reload, or raise the LoadingScreen — stock
 v2.3.3 already isolates mutations from the redeem path. Pre-fix PASS is expected
 (README §Deviations 6); the row exists to catch an unfiltered §7.1 MutationCache
-subscription in Phase 2.
+subscription in the fix implementation.
 
 ```
 check: probe failing execute returned non-auth 4xx/5xx (observed 500) PASS
@@ -230,18 +230,18 @@ in a later run must be re-checked against core logs (`invalid peer certificate` 
 discovery 500s are the known non-M3 confounders — README's debugging note) before
 being attributed.
 
-## Phase-1 gate decision
+## Gate decision
 
 **PROCEED.** Three of the six candidate mechanisms reproduce with wire-level
 evidence (M1, M2, M5), matching the spec's premise that the fix must cover all
 three regardless of which reproduces first (§5). The environment rows (`success`,
-`latency`, `isolation`) are green pre-fix, so Phase 2's post-fix runs have a clean
+`latency`, `isolation`) are green pre-fix, so the post-fix runs have a clean
 regression baseline, and `hung`'s pre-fix reality is documented for the §8 row-4
 comparison.
 
 ---
 
-*Metadata: produced by Task 5 (fresh runs, 2026-10-02 00:10–00:16 -03:00;
+*Metadata: produced by the fresh pre-fix runs (2026-10-02 00:10–00:16 -03:00;
 `exchange-error` re-run 00:30 -03:00); harness
 per README "Run" (podman shim, `compose/oidc-dev.compose.yaml`, digest-pinned core
 `sha256:bca73d0e…`, `oidc-provider@9.12.2`); suite at HEAD `fa53da3c0`; raw ndjson
@@ -249,7 +249,7 @@ evidence in gitignored `compose/oidc-dev/out/`.*
 
 ---
 
-# Post-fix run (Task 11) — `--post-fix` arms enforced
+# Post-fix run — `--post-fix` arms enforced
 
 Completes the second half of this document: same harness, same drive, same suite
 — core rebuilt to serve the branch fix, every run carrying `--post-fix` so the
@@ -289,7 +289,7 @@ Rows marked † ran on the pre-pre-arm build (batch 0) — kept because their
 asserted mechanisms do not touch the pre-arm window the pre-arm build changed
 (reasoning below the table); all others are batch 1 (final build).
 
-| Scenario | Pre-fix (Task 5) | Post-fix (final unless †) | Fix-dependent arms (`--post-fix`) |
+| Scenario | Pre-fix | Post-fix (final unless †) | Fix-dependent arms (`--post-fix`) |
 |---|---|---|---|
 | `success` | PASS 7/7 | **PASS 7/7** | n/a — regression guard holds: window total 0, sliding 0, ws 101 + on_login, dashboard `/` |
 | `latency` † | PASS 8/8 | **PASS 8/8** | n/a — regression guard holds: round-trip 2030 ms ≥ 2000 ms |
@@ -366,7 +366,7 @@ exhaust the 5-per-15 s budget into 429s; draft issue (d) below).
 
 ## hung — watchdog converges, then the late success recovers (§7.1 + §7.7 closed)
 
-`DELAY_AUTH_MS=15000`, past the 12 s watchdog. Pre-fix reality (Task 5): no
+`DELAY_AUTH_MS=15000`, past the 12 s watchdog. Pre-fix reality: no
 watchdog, one continuous spinner for 15.6 s, then the late 200 converged
 normally (slow success).
 
@@ -444,7 +444,7 @@ the same shape as the pre-fix batch (reads at `…697471/472` vs dispatch `…47
 3. A render-phase flip inside a CHILD cannot cover an ANCESTOR's same-commit
    observers. The `router.tsx` comment ("onMutate … flips the gate to `pending`
    before the snapshot read below, so render #1 is already the LoadingScreen")
-   was true for Router's own output only. This also corrects the Task 5 premise
+   was true for Router's own output only. This also corrects the pre-fix premise
    reading above: the stale reads never fired "during pending" — they fire in
    the same commit as the arm, pre-dispatch; the check window
    ([drive start → exchange 200]) simply includes that pre-arm gap.
@@ -632,7 +632,7 @@ express this):**
 
 ---
 
-*Metadata (post-fix section): produced by Task 11 — batch 0 2026-10-02
+*Metadata (post-fix section): produced by the post-fix runs — batch 0 2026-10-02
 02:14–02:25 -03:00 (HEAD `9d9a38a88`, image `5190032c1dbe`, verify.mjs as
 committed at `fa53da3c0`); batch 1 (final) 02:51–02:55 -03:00 (HEAD
 `641f966da`, image `28f89a5be8af`, verify.mjs with `641f966da`'s one-predicate

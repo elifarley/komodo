@@ -49,7 +49,7 @@ portal.oidctest.localhost:443, portal.oidctest.localhost:8443 {
 komodo.oidctest.localhost:443, komodo.oidctest.localhost:8443 {
 	tls internal
 	# JSON access log incl. request headers — assertion source for wire
-	# behavior (Task 4/5 read this file). roll_disabled because the log is a
+	# behavior (verify.mjs + BASELINE.md read this log). roll_disabled because the log is a
 	# single bind-mounted FILE: Caddy's size rotation renames the file, which
 	# cannot work on a per-file bind mount.
 	log {

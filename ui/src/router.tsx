@@ -51,7 +51,7 @@ export const Router = () => {
   // LoadingScreen. mogh_ui's jwt_redeem_ready URL bit is deliberately unused
   // as the gate: after location.replace is initiated, location.search is
   // stale until the new document commits.
-  // redeem-gate.ts owns the why (spec §7.1/§7.2).
+  // redeem-gate.ts owns the why.
   const { passkey_pending, totp } = useAuthState();
   const redeemState = useRedeemState();
 

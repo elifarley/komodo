@@ -125,9 +125,9 @@ throw), `accountId` undefined → **401**; adapter/lookup failure → catch →
 
 ## Driving a login with curl (what the Playwright suite will automate)
 
-Task-3-verified flow (2026-10-02) through the full Caddy front. One cookie jar
+End-to-end verified flow (2026-10-02) through the full Caddy front. One cookie jar
 carries everything: this curl (7.81) DOES accept the parent-domain `_session`
-cookie into the jar (the Task-2 note below about refusing it does not
+cookie into the jar (the Cookie-caveat note below about refusing it does not
 reproduce here), so no manual `-H "Cookie: …"` stitching is needed. Steps
 1–4 share the jar or the login POST dies with SessionNotFound.
 
@@ -172,7 +172,7 @@ curl -sk $R -X POST -H 'content-type: application/json' -d '{}' -b $J \
   "$K/auth/login/ExchangeForJwt"
 ```
 
-### PRE-FIX OBSERVATION (wire-level baseline for Task 5, recorded 2026-10-02)
+### PRE-FIX OBSERVATION (wire-level baseline feeding BASELINE.md, recorded 2026-10-02)
 
 - **First `ExchangeForJwt` → 200 with `{"jwt": …}`.** Empty request body — the
   pending login (incl. PKCE verifier) is server-side state.
@@ -199,7 +199,7 @@ curl -sk $R -X POST -H 'content-type: application/json' -d '{}' -b $J \
   `docker compose logs core` FIRST when the login 500s; `/verify` 503 (mock
   lookup error) has not occurred yet.
 
-Task-2's direct-to-mock flow (loopback :3344, `code → POST /token` with
+The direct-to-mock flow (loopback :3344, `code → POST /token` with
 `client_secret_basic` + PKCE S256 → id_token `sub=alice` / `aud=komodo-harness`,
 `GET /me` → `{"sub":"alice","email":"alice@oidctest.local"}`) remains valid —
 userinfo is the `/me` route in v9, and komodo reads the profile from userinfo
@@ -207,7 +207,7 @@ because the id_token carries only `sub`. Use `$P/dev` or the komodo callback
 as redirect_uri exactly as registered (see `oidc-mock/index.mjs`); the URIs
 now carry `:8443`.
 
-> **Task 3 caveat (resolved):** discovery endpoints are built from the
+> **Caveat (resolved):** discovery endpoints are built from the
 > *request* origin, not the issuer config — source-verified in v9.12.2
 > (`helpers/oidc_context.js` `urlFor` → `this.ctx.href`; only the
 > discovery document's `issuer` field stays pinned to `MOCK_ISSUER`). Two
@@ -228,10 +228,10 @@ complete. If a test browser rejects `Domain=` attributes under `.localhost` (pub
 suffix list edge), switch the harness hosts to a `*.oidctest.test` style name plus
 `/etc/hosts` entries — do **not** drop the parent-domain cookie.
 
-## Deviations from the plan (Task 3 reality-checks)
+## Deviations from the original sketches (OIDC-enable reality-checks)
 
-The plan's Task-3 snippets predate Tasks 1–2's findings; where reality differed,
-reality won and is documented here.
+The original OIDC-enable snippets predate the Caddy-front and direct-to-mock
+findings; where reality differed, reality won and is documented here.
 
 1. **Published port is `127.0.0.1:8443 → 443`, not `80:80` + `443:443`.** The
    host's system Caddy already owns 80, and rootless podman cannot publish
@@ -267,7 +267,7 @@ reality won and is documented here.
    requires a 302 to the portal, not a bare 401). Navigation is detected by
    `X-Forwarded-Method` (Caddy's forward_auth subrequest always sets it):
    GET/HEAD → `302` to a throwaway authorize URL; everything else — and any
-   direct probe WITHOUT `X-Forwarded-Method`, i.e. Task 2's documented
+   direct probe WITHOUT `X-Forwarded-Method`, i.e. the direct-to-mock
    `curl /verify` recipe — still gets `401`. The throwaway authorize uses
    `redirect_uri=$PORTAL/dev` (a registered second URI): a gateway-initiated
    authorize carries a fixed PKCE challenge that could never complete komodo's
@@ -305,7 +305,7 @@ The scenarios manage this knob themselves (read via `printenv` inside the
 delay container, recreated when it differs, restored to 0 afterwards) — run
 the suite, not the knob.
 
-## Verify suite (Task 4) — `verify.mjs`
+## Verify suite — `verify.mjs`
 
 One script drives the scenario matrix (spec §6) over the Caddy JSON access log
 plus browser instrumentation, prints per-assertion PASS/FAIL lines, then
@@ -324,7 +324,7 @@ node compose/oidc-dev/verify.mjs hung             # sets DELAY_AUTH_MS=15000, ~2
 node compose/oidc-dev/verify.mjs isolation
 node compose/oidc-dev/verify.mjs all              # sequential, 16 s gap between rows (per-IP auth limiter: 5/15 s)
 
-# Task 11 (post-fix) only — also enforces the FIX-DEPENDENT assertions:
+# Post-fix runs only — also enforces the FIX-DEPENDENT assertions:
 node compose/oidc-dev/verify.mjs <scenario> --post-fix
 ```
 
@@ -359,7 +359,7 @@ Notes:
 | ws rows | The `/ws/update` row is written when the connection **CLOSES**, not at the handshake — its `ts` must never anchor a time window (the success scenario closes the browser context to flush the row before checking). |
 | hosts | Row hosts carry `:8443` (`komodo.oidctest.localhost:8443`). |
 
-### Deviations from the plan's Task-4 sketch (reality won)
+### Deviations from the original verify-suite sketch (reality won)
 
 1. **The `m1-seeded` scenario manages the knob (`DELAY_AUTH_MS=1500`).** The
    sketch seeded the stale token and hoped the requests landed inside the
@@ -419,11 +419,11 @@ Notes:
 ### PRE-FIX BASELINE SUMMARY (stock v2.3.3 UI, observed 2026-10-02)
 
 > **Superseded numbers — `BASELINE.md` is canonical.** This summary carries
-> Task-4-era values (e.g. latency 2029 ms); Task 5's fresh batch re-measured
-> them (BASELINE.md header) and Task 11 appended the post-fix half. Read
-> `BASELINE.md` for both.
+> the verify suite's first-pass values (e.g. latency 2029 ms); the fresh
+> baseline batch re-measured them (BASELINE.md header) and the post-fix run
+> appended the post-fix half. Read `BASELINE.md` for both.
 
-Feeds Task 5's `BASELINE.md`:
+Feeds the pre-fix baseline (`BASELINE.md`):
 
 - **`success`** — green (environment row): exchange 200, authed follow-ups, ws
   101 + on_login, dashboard; window bound 0 rows.

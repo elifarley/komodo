@@ -62,7 +62,7 @@ services:
       # Precedence rule (bin/core/src/config.rs:211-213): komodo env vars
       # OVERRIDE file config — `env.komodo_oidc_enabled.unwrap_or(config.oidc_enabled)`,
       # same for oidc_auto_redirect and jwt_secret. An env pin here would
-      # silently defeat Task 3's config flip, so the OIDC toggles
+      # silently defeat the OIDC enable flip in core-config.toml, so the OIDC toggles
       # (oidc_enabled, oidc_auto_redirect) and jwt_secret live ONLY in
       # compose/oidc-dev/core-config.toml — it is the single source of truth
       # for those values.
@@ -84,7 +84,7 @@ services:
   # not survive restarts — fine for a test harness). No mongo dependency: it
   # keeps no durable state. Port 3344 is published on LOOPBACK ONLY for
   # host-side debugging — the mock auto-consents anyone, so it must never be
-  # reachable from the LAN. Task 3's Caddy talks to it over the compose
+  # reachable from the LAN. The Caddy front talks to it over the compose
   # network as http://oidc-mock:3344.
   oidc-mock:
     build:
