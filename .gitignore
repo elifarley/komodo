@@ -7,3 +7,5 @@ deno.lock
 .DS_Store
 .idea
 .dev
+compose/oidc-dev/access.log
+compose/oidc-dev/caddy-root-ca.crt

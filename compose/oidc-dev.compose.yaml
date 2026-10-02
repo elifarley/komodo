@@ -52,8 +52,13 @@ services:
       # no KOMODO_DATABASE_URL; an unknown env is silently ignored and core
       # falls back to database.address = localhost:27017 and dies on startup.
       KOMODO_DATABASE_URI: mongodb://mongo:27017/komodo?replicaSet=rs0
-      KOMODO_HOST: https://komodo.oidctest.localhost
+      # :8443 because the harness host cannot publish 443 (rootless podman) —
+      # this must match core-config.toml's `host` and the Caddy publish port.
+      KOMODO_HOST: https://komodo.oidctest.localhost:8443
       KOMODO_LOCAL_AUTH: "true"
+      # Trust anchor for core -> portal discovery/token/userinfo fetches
+      # (Caddy's internal CA). See the volume note below.
+      SSL_CERT_FILE: /config/caddy-root-ca.crt
       # Precedence rule (bin/core/src/config.rs:211-213): komodo env vars
       # OVERRIDE file config — `env.komodo_oidc_enabled.unwrap_or(config.oidc_enabled)`,
       # same for oidc_auto_redirect and jwt_secret. An env pin here would
@@ -67,6 +72,13 @@ services:
       - oidc-dev-config:/config
       - ./oidc-dev/core-config.toml:/config/config.toml:ro
       - oidc-dev-repo-cache:/config/repo-cache
+      # Core dials the portal (issuer URL) through Caddy's internal CA; its
+      # rustls root store starts empty of it ("invalid peer certificate:
+      # UnknownIssuer" — observed 2026-10-02). The root must be EXPORTED after
+      # Caddy's first boot and refreshed if the oidc-dev-caddy-data volume is
+      # recreated (see README). SSL_CERT_FILE is honored by rustls-native-certs
+      # (openssl-probe) and openssl/native-tls alike.
+      - ./oidc-dev/caddy-root-ca.crt:/config/caddy-root-ca.crt:ro
 
   # The OIDC provider for the harness. Default in-memory adapter (sessions do
   # not survive restarts — fine for a test harness). No mongo dependency: it
@@ -80,11 +92,74 @@ services:
       dockerfile: oidc-mock/Dockerfile
     restart: unless-stopped
     environment:
-      MOCK_ISSUER: https://portal.oidctest.localhost
+      # Issuer = the BROWSER-facing portal origin (:8443 — rootless podman
+      # cannot publish 443; see README "Deviations"). Must be byte-identical
+      # to core-config.toml's oidc_provider: komodo validates the discovery
+      # document's `issuer` field against it exactly.
+      MOCK_ISSUER: https://portal.oidctest.localhost:8443
+      # The komodo RP origin as the browser sees it — used for the client's
+      # registered redirect_uris.
+      KOMODO_ORIGIN: https://komodo.oidctest.localhost:8443
     ports:
       - "127.0.0.1:3344:3344"
+
+  # LATENCY KNOB (spec §6): Caddy routes /auth/login/* here; the sidecar adds
+  # DELAY_AUTH_MS (real awaited setTimeout — ClientRequest.setTimeout delays
+  # nothing) then pipes to core. Keep it under the §7.1 watchdog (12 s); the
+  # dedicated past-watchdog harness row uses 15000. No build: delay.mjs only
+  # imports node:http, so a bare node image + bind mount is the whole service.
+  delay:
+    image: node:22.12-alpine
+    restart: unless-stopped
+    command: ["node", "/app/delay.mjs"]
+    volumes:
+      - ./oidc-dev/delay.mjs:/app/delay.mjs:ro
+    environment:
+      DELAY_AUTH_MS: ${DELAY_AUTH_MS:-0}
+    depends_on:
+      - core
+
+  # TLS front + forward_auth gate + JSON access log. See compose/oidc-dev/Caddyfile.
+  #
+  # PORT REALITY (deviation from the plan draft): 80/443 cannot be published —
+  # the host's system Caddy owns 80 and rootless podman refuses ports < 1024.
+  # Everything publishes on 127.0.0.1:8443 (loopback ONLY: the portal vhost
+  # exposes the auto-consenting mock, so this binding is a security boundary,
+  # same as the mock's 127.0.0.1:3344). No [::1] twin: rootlessport cannot bind
+  # IPv6 loopback ("cannot assign requested address") and the host resolver
+  # answers *.localhost with 127.0.0.1 only anyway.
+  #
+  # network aliases make the browser-facing hostnames resolvable from INSIDE
+  # the compose network: core fetches OIDC discovery at its configured issuer
+  # (https://portal.oidctest.localhost:8443), which would NXDOMAIN otherwise.
+  #
+  # access.log MUST exist as a FILE before the first `up` (touch
+  # compose/oidc-dev/access.log): a missing bind-mount file source gets
+  # pre-created as a DIRECTORY, which breaks Caddy's file logger.
+  caddy:
+    image: caddy:2.11
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8443:443"
+    volumes:
+      - ./oidc-dev/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Roll is disabled in the Caddyfile — rotation renames the file, which
+      # cannot work on a per-file bind mount.
+      - ./oidc-dev/access.log:/data/access.log
+      # TLS cert/CA cache (Caddy's internal CA lives here; see README for
+      # exporting its root into core's trust).
+      - oidc-dev-caddy-data:/data
+    networks:
+      default:
+        aliases:
+          - portal.oidctest.localhost
+          - komodo.oidctest.localhost
+    depends_on:
+      - core
+      - oidc-mock
 
 volumes:
   oidc-dev-mongo:
   oidc-dev-config:
   oidc-dev-repo-cache:
+  oidc-dev-caddy-data:
