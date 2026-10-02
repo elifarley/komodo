@@ -20,7 +20,9 @@ const WATCHDOG_MS = 12_000;
 // the last confirmed settlement, not the original arm.
 const FLAG_TTL_MS = 15_000;
 const FLAG_KEY = "komodo-redeem";
-const TOKENS_KEY = "mogh-auth-tokens-v1"; // mogh_auth_client 1.7.1 tokens.js:5
+// Exported so login.tsx's §7.7 jwt-presence check reads the same key the M2
+// check here writes/reads — one source of truth for the mogh storage key.
+export const MOGH_TOKENS_KEY = "mogh-auth-tokens-v1"; // mogh_auth_client 1.7.1 tokens.js:5
 
 let state: RedeemState = "idle";
 let watchdog: ReturnType<typeof setTimeout> | undefined;
@@ -174,7 +176,7 @@ export function initRedeemGate(client: QueryClient) {
         // §7.3: on parse failure log the RAW stored value, not just the
         // SyntaxError. safe()'s label interpolates it, and a label only prints
         // on failure — the happy path builds a short string it never logs.
-        const raw = safe(() => localStorage.getItem(TOKENS_KEY), "M2 storage read");
+        const raw = safe(() => localStorage.getItem(MOGH_TOKENS_KEY), "M2 storage read");
         stored =
           safe(() => {
             const parsed = raw ? (JSON.parse(raw) as { tokens?: Array<{ jwt: string }> }) : undefined;
