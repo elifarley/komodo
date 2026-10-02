@@ -34,6 +34,10 @@ export default function Login(props: {
         title: "Login succeeded but the session could not be stored",
         message: "Please log in again.",
         color: "red",
+        // Mantine defaults to autoClose: 4000 — a silent-failure notice that
+        // vanishes by ~T+5s would defeat the spec's M2 goal (non-silence) and
+        // race verify.mjs's fix-dependent probe (~T+8s). Must-act toasts stay.
+        autoClose: false,
       });
       return;
     }
