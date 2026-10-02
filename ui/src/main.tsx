@@ -1,6 +1,10 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  MutationCache,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
 import { createRedeemGateHooks, initRedeemGate } from "@/lib/redeem-gate";
 import { WebsocketProvider } from "@/lib/socket";
 import { Router } from "@/router";
@@ -31,9 +35,8 @@ const client = new QueryClient({
 });
 
 setAuthUrl(KOMODO_BASE_URL + "/auth");
-// Module-scope init, once — StrictMode-immune by construction (no effects).
-// Cache listeners fire synchronously inside the mutation dispatch's task, so an
-// effect-scoped subscriber could never observe the render-phase-fired redeem.
+// Module-scope init, once — StrictMode-immune by construction (no effects);
+// redeem-gate.ts owns the why (cache listeners fire in the dispatch task).
 initRedeemGate(client);
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
