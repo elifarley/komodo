@@ -1,0 +1,6 @@
+# Harness core config. Never use these secrets outside compose/oidc-dev.
+host = "https://komodo.oidctest.localhost"
+local_auth = true
+oidc_enabled = false
+oidc_auto_redirect = false
+jwt_secret = "oidc-dev-jwt-secret-not-for-production"
