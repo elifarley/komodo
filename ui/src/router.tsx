@@ -1,4 +1,4 @@
-import { lazy } from "react";
+import { lazy, useEffect } from "react";
 import {
   BrowserRouter,
   Navigate,
@@ -7,8 +7,10 @@ import {
   Routes,
   useLocation,
 } from "react-router-dom";
+import { notifications } from "@mantine/notifications";
 import { LoadingScreen, useAuthState } from "mogh_ui";
 import { useUser } from "@/lib/hooks";
+import { useRedeemState } from "@/lib/redeem-gate";
 import { MoghAuth } from "komodo_client";
 import App from "@/app";
 
@@ -43,10 +45,33 @@ const SwarmConfig = lazy(() => import("@/pages/swarm/config"));
 const SwarmSecret = lazy(() => import("@/pages/swarm/secret"));
 
 export const Router = () => {
-  // Handle exchange token loop to avoid showing login flash
-  const { jwt_redeem_ready, passkey_pending, totp } = useAuthState();
+  // mogh_ui's useAuthState fires the redeem mutation synchronously in its body
+  // during THIS render — the config onMutate in redeem-gate.ts flips the gate
+  // to "pending" before the snapshot read below, so render #1 is already the
+  // LoadingScreen. mogh_ui's jwt_redeem_ready URL bit is deliberately unused
+  // as the gate: after location.replace is initiated, location.search is
+  // stale until the new document commits.
+  // redeem-gate.ts owns the why (spec §7.1/§7.2).
+  const { passkey_pending, totp } = useAuthState();
+  const redeemState = useRedeemState();
 
-  if (jwt_redeem_ready) {
+  useEffect(() => {
+    if (redeemState !== "settled-failed") return;
+    // NOTE: token hygiene (LOGIN_TOKENS.remove_all) does NOT live here — it
+    // runs in the settlement listener (redeem-gate.ts), synchronously before
+    // this render. This effect is UI convergence only: URL strip + notification.
+    const url = new URL(window.location.href);
+    for (const p of ["redeem_ready", "totp", "passkey"])
+      url.searchParams.delete(p);
+    window.history.replaceState(null, "", url.pathname + url.search);
+    notifications.show({
+      title: "Login didn't complete",
+      message: "Returned to the login page.",
+      color: "red",
+    });
+  }, [redeemState]);
+
+  if (redeemState === "pending") {
     return <LoadingScreen />;
   }
 
