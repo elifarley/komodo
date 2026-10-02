@@ -67,7 +67,10 @@ services:
       # compose/oidc-dev/core-config.toml — it is the single source of truth
       # for those values.
     ports:
-      - "9120:9120"
+      # Loopback-only (posture parity with the Caddy/mock bindings — README
+      # Deviations 1): core's API port is a harness-internal surface, never a
+      # LAN listener. Host-side health check (`curl localhost:9120`) unaffected.
+      - "127.0.0.1:9120:9120"
     volumes:
       - oidc-dev-config:/config
       - ./oidc-dev/core-config.toml:/config/config.toml:ro

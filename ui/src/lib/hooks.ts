@@ -55,6 +55,22 @@ type UserConfig = {
   enabled?: QueryBooleanOption<Types.User, Error, Types.User, string[]>;
 };
 
+// The jwt gate, composed with a caller's `enabled` — ONE helper for useUser
+// and useRead (two diverging ternaries of the same rule is how they drift).
+// Generic in the react-query query type so each call site keeps inferring the
+// function-valued form's parameter from its own options (see the UserConfig
+// note above: that exact type is what tsc validates against). A caller's
+// `false` must win (never force-read without a jwt) and `hasJwt` is always
+// ANDed — never replaceable by the caller.
+function composeEnabled<Q>(
+  hasJwt: boolean,
+  callerEnabled: boolean | ((query: Q) => boolean) | undefined,
+): boolean | ((query: Q) => boolean) {
+  return typeof callerEnabled === "function"
+    ? (q) => hasJwt && callerEnabled(q) !== false
+    : hasJwt && callerEnabled !== false;
+}
+
 export function useUser(config?: UserConfig) {
   const userReset = useUserReset();
   const hasJwt = !!MoghAuth.LOGIN_TOKENS.jwt();
@@ -68,10 +84,7 @@ export function useUser(config?: UserConfig) {
     // Composed AFTER the spread (composition rule): a caller's `enabled` composes
     // with the jwt gate instead of replacing it — `hasJwt` is always ANDed
     // (never replaceable), and the function-valued form is composed too.
-    enabled:
-      typeof callerEnabled === "function"
-        ? (q) => hasJwt && callerEnabled(q) !== false
-        : (callerEnabled ?? true) && hasJwt,
+    enabled: composeEnabled(hasJwt, callerEnabled),
   });
 
   useEffect(() => {
@@ -122,10 +135,7 @@ export function useRead<
     // and RQ resolves `undefined` as enabled) used to replace the jwt gate
     // wholesale; the function-valued form is composed, not dropped by the
     // old `!== false` check.
-    enabled:
-      typeof callerEnabled === "function"
-        ? (q) => hasJwt && callerEnabled(q) !== false
-        : hasJwt && callerEnabled !== false,
+    enabled: composeEnabled(hasJwt, callerEnabled),
   });
 }
 

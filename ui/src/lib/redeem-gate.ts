@@ -20,8 +20,9 @@ const WATCHDOG_MS = 12_000;
 // measures from the last confirmed settlement, not the original arm.
 const FLAG_TTL_MS = 15_000;
 const FLAG_KEY = "komodo-redeem";
-// Exported so login.tsx's jwt-presence check reads the same key the silent
-// token drop check here writes/reads — one source of truth for the mogh storage key.
+// Exported as the documented seam (upstream draft (b) cites it); every read
+// of the key goes through readMoghStore() below — one parse, one source of
+// truth for the mogh storage key.
 export const MOGH_TOKENS_KEY = "mogh-auth-tokens-v1"; // mogh_auth_client 1.7.1 tokens.js:5
 
 let state: RedeemState = "idle";
@@ -70,6 +71,33 @@ function safe<T>(fn: () => T, label: string): T | undefined {
     console.error(`redeem-gate: ${label} failed (ignored)`, e);
     return undefined;
   }
+}
+
+// The mogh token store, parsed exactly once per check (the key/schema live in
+// mogh_auth_client ^1.7.1's tokens.js — ONE reader here, so a shape change
+// upstream has one place to surface). Absence and corruption both yield
+// undefined; on a parse failure the RAW stored value is logged via safe()'s
+// label (labels only print on failure, so the happy path builds a short
+// string it never logs).
+type MoghTokenStore = {
+  current?: string;
+  tokens?: Array<{ user_id: string; jwt: string }>;
+};
+
+function readMoghStore(): MoghTokenStore | undefined {
+  const raw = safe(
+    () => localStorage.getItem(MOGH_TOKENS_KEY),
+    "mogh token store read",
+  );
+  return safe(
+    () => (raw ? (JSON.parse(raw) as MoghTokenStore) : undefined),
+    `mogh token store parse (raw: ${raw})`,
+  );
+}
+
+/** Schema-shaped presence check: the store parsed and holds a token entry. */
+export function hasStoredJwt(): boolean {
+  return (readMoghStore()?.tokens?.length ?? 0) > 0;
 }
 
 // PRE-ARM: mogh_ui fires the redeem during ROUTER's
@@ -198,24 +226,38 @@ export function initRedeemGate(client: QueryClient) {
       // the jwt? action.data is the exact success-dispatch payload (identical
       // to mutation.state.data per mutation.cjs's success reducer).
       const jwt = (event.action.data as { jwt?: string } | undefined)?.jwt;
-      let stored = false;
+      let phase: RedeemFlag["phase"] = "ok";
       if (jwt) {
-        // On parse failure log the RAW stored value, not just the
-        // SyntaxError. safe()'s label interpolates it, and a label only prints
-        // on failure — the happy path builds a short string it never logs.
-        const raw = safe(
-          () => localStorage.getItem(MOGH_TOKENS_KEY),
-          "silent-drop storage read",
-        );
-        stored =
-          safe(() => {
-            const parsed = raw
-              ? (JSON.parse(raw) as { tokens?: Array<{ jwt: string }> })
-              : undefined;
-            return parsed?.tokens?.some((t) => t.jwt === jwt) === true;
-          }, `silent-drop parse (raw: ${raw})`) === true;
+        const store = readMoghStore();
+        const jwtAbsent = !store?.tokens?.some((t) => t.jwt === jwt);
+        // Schema guard — a "drop" verdict needs the absence to be
+        // TRUSTWORTHY, and two shapes of doubt say it is not:
+        //  1. the pinned key parsed into bytes that are not the expected
+        //     `{ tokens: [...] }` schema (a non-store wrote this key, or the
+        //     schema changed under us); or
+        //  2. mogh's own closure view holds a jwt while our read of the
+        //     pinned key lacks THIS one — a successful add_and_change
+        //     updates that view in-process, so a truthy jwt() contradicting
+        //     our absence means the library wrote a DIFFERENT key (upstream
+        //     key/schema rename under ^1.7.1) and our view is stale by
+        //     construction.
+        // Both log and fail toward "ok" — never a false drop. KEY POINT:
+        // plain absence (store undefined) with an EMPTY library view is not
+        // doubt — that is exactly the m2 silent-drop shape (add_and_change
+        // swallowed the token; nothing was written anywhere), so it must
+        // still verdict "drop".
+        const driftSuspected =
+          (store !== undefined && !Array.isArray(store.tokens)) ||
+          (jwtAbsent && !!safe(() => MoghAuth.LOGIN_TOKENS.jwt(), "jwt read"));
+        if (driftSuspected) {
+          console.error(
+            "redeem-gate: mogh token store shape unrecognized — silent-drop detection unavailable (upstream key/schema drift suspected)",
+          );
+        } else if (jwtAbsent) {
+          phase = "drop";
+        }
       }
-      writeFlag(jwt && !stored ? "drop" : "ok"); // refresh t: late-success TTL runs from here
+      writeFlag(phase); // refresh t: late-success TTL runs from here
       setState("settled-ok");
     } else if (event.action.type === "error") {
       setState("settled-failed");

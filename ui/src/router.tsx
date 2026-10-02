@@ -44,6 +44,17 @@ const SwarmTask = lazy(() => import("@/pages/swarm/task"));
 const SwarmConfig = lazy(() => import("@/pages/swarm/config"));
 const SwarmSecret = lazy(() => import("@/pages/swarm/secret"));
 
+// One-shot latch for the settled-failed notification, PER DOCUMENT (module
+// scope, not a ref: StrictMode's dev double-mount re-runs the effect with a
+// fresh component but the same settlement). Two paths re-enter it:
+//  - the dev double-mount itself (mount -> effect -> cleanup -> effect), and
+//  - a late onMutate after the watchdog already settled (the pre-arm is
+//    idempotent, but the real mutation can still flip pending -> settled-failed
+//    a second time) — the URL strip is idempotent, the toast is not.
+// A NEW document (real retry) legitimately re-arms: only one notice per
+// failure, not one per app lifetime.
+let failureNoticeShown = false;
+
 export const Router = () => {
   // mogh_ui's useAuthState fires the redeem mutation synchronously in its body
   // during THIS render — the config onMutate in redeem-gate.ts flips the gate
@@ -64,11 +75,14 @@ export const Router = () => {
     for (const p of ["redeem_ready", "totp", "passkey"])
       url.searchParams.delete(p);
     window.history.replaceState(null, "", url.pathname + url.search);
-    notifications.show({
-      title: "Login didn't complete",
-      message: "Returned to the login page.",
-      color: "red",
-    });
+    if (!failureNoticeShown) {
+      failureNoticeShown = true;
+      notifications.show({
+        title: "Login didn't complete",
+        message: "Returned to the login page.",
+        color: "red",
+      });
+    }
   }, [redeemState]);
 
   if (redeemState === "pending") {

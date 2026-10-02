@@ -5,7 +5,7 @@ import { useUserInvalidate } from "@/lib/hooks";
 import {
   consumeRedeemFlag,
   flagFresh,
-  MOGH_TOKENS_KEY,
+  hasStoredJwt,
   readRedeemFlag,
 } from "@/lib/redeem-gate";
 
@@ -42,21 +42,14 @@ export default function Login(props: {
       return;
     }
     if (!flagFresh(flag)) return; // stale: ignored (TTL expiry); lingers harmlessly until tab close
-    // jwt presence, decode-free: any entry in the mogh-auth store schema.
+    // jwt presence, decode-free, via THE parser for the mogh store
+    // (redeem-gate.readMoghStore — one parse, shared with the silent-drop
+    // check; a second independent parser here is how two copies drift).
     // The exchanged jwt itself is not available post-reload —
     // presence plus the fresh flag is the late-success signal; safety rests
     // on the watchdog path having cleared the store before the late success
-    // re-stored the token. A corrupt store throws -> caught -> treated as
-    // absent -> no redirect.
-    let hasJwt = false;
-    try {
-      const raw = localStorage.getItem(MOGH_TOKENS_KEY);
-      const parsed = raw ? JSON.parse(raw) : undefined;
-      hasJwt = Array.isArray(parsed?.tokens) && parsed.tokens.length > 0;
-    } catch {
-      hasJwt = false;
-    }
-    if (hasJwt) {
+    // re-stored the token. Absent/corrupt store -> false -> no redirect.
+    if (hasStoredJwt()) {
       // Consume BEFORE navigating: the next document finds no flag, so the
       // redirect cannot loop — including across StrictMode's double effect.
       consumeRedeemFlag();

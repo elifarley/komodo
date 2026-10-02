@@ -4,6 +4,9 @@
   `exchange-error` re-run at 00:30:25 — provenance note in its section)
 - **Suite commit / HEAD:** `fa53da3c0` — `compose/oidc-dev/verify.mjs` exactly as
   committed there (no local edits); branch `komodo-oidc-login-jwt-redeem-race-fix-1665`
+  (pre-rewrite hash; full history on the fork's
+  `komodo-oidc-login-jwt-redeem-race-fix-1665-archive` branch — same note applies
+  to every commit hash in this document, see the post-fix provenance)
 - **UI under test:** **stock v2.3.3** — last commit touching `ui/` is the `v2.3.3`
   tag commit itself (`780ac68b9`); the branch carries none of the fix's code yet
   (fix implementation not started). Core image = digest-pinned `ghcr.io/moghtech/komodo-core@sha256:bca73d0e…`
@@ -244,8 +247,9 @@ comparison.
 *Metadata: produced by the fresh pre-fix runs (2026-10-02 00:10–00:16 -03:00;
 `exchange-error` re-run 00:30 -03:00); harness
 per README "Run" (podman shim, `compose/oidc-dev.compose.yaml`, digest-pinned core
-`sha256:bca73d0e…`, `oidc-provider@9.12.2`); suite at HEAD `fa53da3c0`; raw ndjson
-evidence in gitignored `compose/oidc-dev/out/`.*
+`sha256:bca73d0e…`, `oidc-provider@9.12.2`); suite at HEAD `fa53da3c0` (pre-rewrite
+hash; full history on the fork's `komodo-oidc-login-jwt-redeem-race-fix-1665-archive`
+branch); raw ndjson evidence in gitignored `compose/oidc-dev/out/`.*
 
 ---
 
@@ -256,14 +260,25 @@ Completes the second half of this document: same harness, same drive, same suite
 fix-dependent assertions were ENFORCED (never SKIPped) and the pre-fix mechanism
 assertions SKIPped by design (`reportChecks`).
 
+> **Provenance note:** every commit hash cited in this document (`fa53da3c0`,
+> `9d9a38a88`, `49802408e`, `641f966da`, …) is a pre-rewrite hash, unreachable
+> from the PR branch's current history; full history lives on the fork's
+> `komodo-oidc-login-jwt-redeem-race-fix-1665-archive` branch.
+
 - **Date / builds:** batch 0 — 02:14:55–02:25:29 -03:00 against the
   **pre-pre-arm build** (`5190032c1dbe`, HEAD `9d9a38a88`); batch 1 (final) —
   02:51:17–02:54:55 -03:00 against the **final build** (`28f89a5be8af`, HEAD
-  `641f966da`). Individual runs, ≥16 s apart — the per-IP limiter discipline.
-  Batch 0 first ran every scenario and EXPOSED a real fix defect (m1-seeded
-  FAIL, root-caused below); `641f966da` (module-scope pre-arm, reviewed) closed
-  it, and batch 1 re-baselined the gate-sensitive rows on the final image:
-  `success`, `m1-seeded`, `hung`, `isolation`.
+  `641f966da`); batch 2 (canonical) — 08:58–09:04 -03:00 against the SAME final
+  build (image id re-verified unchanged: `28f89a5be8af`). Individual runs, ≥16 s
+  apart — the per-IP limiter discipline. Batch 0 first ran every scenario and
+  EXPOSED a real fix defect (m1-seeded FAIL, root-caused below); `641f966da`
+  (module-scope pre-arm, reviewed) closed it, and batch 1 re-baselined four rows
+  on the final image (`success`, `m1-seeded`, `hung`, `isolation`). The remaining
+  three rows originally stood on batch 0 under a transfer argument that did not
+  survive scrutiny — batch 0's own `exchange-error` ndjson shows the pre-arm
+  gap firing in that scenario (−16 ms rows, detailed below the verdict table) —
+  so batch 2 re-ran them on the final build. Every post-fix row in the table is
+  now a final-build run; batch 0's copies are historical only.
 - **Suite:** batch 0 ran `verify.mjs` byte-identical to `fa53da3c0`; batch 1
   runs it with the one-predicate scoping fix from `641f966da` (documented in
   the m1 resolution — the m1 value arm's shim filter self-matched the
@@ -280,40 +295,59 @@ assertions SKIPped by design (`reportChecks`).
 - **Host build acceptance:** `cd ui && yarn build` clean (exit 0, verified on
   both builds).
 - **Evidence:** `out/<scenario>.ndjson` files refreshed by each batch
-  (gitignored — batch 1 is the surviving file for its four rows); excerpts
+  (gitignored — batch 1 is the surviving file for its four rows, batch 2 for
+  its three); excerpts
   below follow the same elision discipline as the pre-fix sections.
 
 ## Verdicts (pre-fix → post-fix)
 
-Rows marked † ran on the pre-pre-arm build (batch 0) — kept because their
-asserted mechanisms do not touch the pre-arm window the pre-arm build changed
-(reasoning below the table); all others are batch 1 (final build).
+Every post-fix row below ran on the FINAL build. Batch 1 covered four rows;
+batch 2 (canonical) re-ran the remaining three (`latency`, `m2-forced`,
+`exchange-error`) after the transfer argument that had let them stand on batch 0
+was refuted — see "The retired † argument" below. Batch 0's copies of those
+rows are historical only.
 
-| Scenario | Pre-fix | Post-fix (final unless †) | Fix-dependent arms (`--post-fix`) |
+| Scenario | Pre-fix | Post-fix (final build) | Fix-dependent arms (`--post-fix`) |
 |---|---|---|---|
-| `success` | PASS 7/7 | **PASS 7/7** | n/a — regression guard holds: window total 0, sliding 0, ws 101 + on_login, dashboard `/` |
-| `latency` † | PASS 8/8 | **PASS 8/8** | n/a — regression guard holds: round-trip 2030 ms ≥ 2000 ms |
-| `m1-seeded` | PASS 4/4 (M1 REPRODUCED) | **PASS 4/4** (was **FAIL 2/4** on batch 0) | zero-stale-reads arm (read deferral): **observed 0** stale reads; value-absence arm PASS (scoped); fresh-pointer PASS |
-| `m2-forced` † | PASS 4/4 +1 SKIP (M2 REPRODUCED) | **PASS 5/5** | drop flag surfaced in-document on the login page — M2 no longer silent |
-| `exchange-error` † | PASS 3/3 +2 SKIP (M5 REPRODUCED) | **PASS 3/3** (2 pre-fix arms SKIP) | converged failure in-document (exactly 1 document load, final `/login`) + zero-residual 60 s (0 bad rows, 0 failed ws) |
-| `hung` | PASS 3/3 +3 SKIP (slow success) | **PASS 5/5** (1 pre-fix arm SKIP) | watchdog dropped the gate 12.1 s after landing — 3.0 s BEFORE the late 200; zero-residual 60 s (0/0); the late-success redirect recovered the login → landed `/` |
-| `isolation` | PASS 3/3 | **PASS 3/3** | n/a — the gate's filtered subscription introduced no gate flip (regression guard holds) |
+| `success` | PASS 7/7 | **PASS 7/7** (batch 1) | n/a — regression guard holds: window total 0, sliding 0, ws 101 + on_login, dashboard `/` |
+| `latency` | PASS 8/8 | **PASS 8/8** (batch 2) | n/a — regression guard holds: round-trip 2058 ms ≥ 2000 ms |
+| `m1-seeded` | PASS 4/4 (M1 REPRODUCED) | **PASS 4/4** (batch 1; was **FAIL 2/4** on batch 0) | zero-stale-reads arm (read deferral): **observed 0** stale reads; value-absence arm PASS (scoped); fresh-pointer PASS |
+| `m2-forced` | PASS 4/4 +1 SKIP (M2 REPRODUCED) | **PASS 5/5** (batch 2) | drop flag surfaced in-document on the login page — M2 no longer silent |
+| `exchange-error` | PASS 3/3 +2 SKIP (M5 REPRODUCED) | **PASS 3/3** (batch 2; 2 pre-fix arms SKIP) | converged failure in-document (exactly 1 document load, final `/login`) + zero-residual 60 s (0 bad rows, 0 failed ws) |
+| `hung` | PASS 3/3 +3 SKIP (slow success) | **PASS 5/5** (batch 1; 1 pre-fix arm SKIP) | watchdog dropped the gate 12.1 s after landing — 3.0 s BEFORE the late 200; zero-residual 60 s (0/0); the late-success redirect recovered the login → landed `/` |
+| `isolation` | PASS 3/3 | **PASS 3/3** (batch 1) | n/a — the gate's filtered subscription introduced no gate flip (regression guard holds) |
 
 **7/7 green — the "full suite green post-fix" acceptance criterion is met.**
 
-† reasoning (why the pre-pre-arm run stands for these rows): the pre-arm
-change (`641f966da`) alters exactly one thing — WHEN the gate closes on a
-document whose URL carries `redeem_ready=true` (module scope, before first
-render, instead of at the redeem mutation's `onMutate`). The three † rows
-assert nothing about that window: `latency` is `success` plus the delay-knob
-round-trip assertion (`success` re-ran green on the final build);
-`m2-forced` asserts the drop DETECTION at settlement (settlement listener +
-login-page toast — code paths downstream of the gate) plus the still-true
-silent-drop arms; `exchange-error` asserts the settled-failed CONVERGENCE
-(in-document, no reload) — the same settlement path `hung`'s watchdog convergence
-exercises, and `hung` re-ran green on the final build. Batch 0's `m1-seeded`
-FAIL, by contrast, was precisely a pre-arm-window assertion — re-run required,
-and done.
+### The retired † argument — what was wrong, and what replaced it
+
+The previous revision marked `latency` / `m2-forced` / `exchange-error` †
+("ran on the pre-pre-arm build; kept because their asserted mechanisms do not
+touch the pre-arm window"). That justification was **false for
+`exchange-error`**, and batch 0's own ndjson refutes it: the replay document
+dispatched auth-bearing `GET /user` + `POST /read/GetCoreInfo` BEFORE the redeem
+dispatch — fetch-shim `ts_ms 1790918528200` and `…528200` vs the exchange
+dispatch at `…528202` (−2 ms); wire completions `1790918528.2028` /
+`1790918528.202812` vs the 401 at `1790918528.2185` (−16 ms) — both rows
+`Referer`-pinned by Caddy to `/?redeem_ready=true`, i.e. sent by the redeem
+document itself. That IS the parent-first gap the pre-arm closes, firing in
+exactly the scenario the old text claimed was untouched. (Recorded in full as
+PRE-ARM PROOF in the m1 section below.)
+
+The two-part transfer argument, stated correctly — and mooted by batch 2:
+1. **Pre-arm window:** the module-scope pre-arm defers the redeem document's
+   own provider reads until the gate closes. Batch 0's `exchange-error` rows
+   prove the gap was real in a second scenario (not just `m1-seeded`); batch 2
+   proves the fix closes it there too — zero fetch rows of any kind between the
+   replay document load and the exchange dispatch.
+2. **Post-settlement:** `enabled = gateOpen && hasJwt` keeps the provider reads
+   off because the settlement hygiene (`LOGIN_TOKENS.remove_all`) empties the
+   store — `hasJwt` is false until a real login re-stores a token, so the
+   post-settlement assertions transfer across builds.
+
+Since part 1 was a live defect inside a † row's own scenario, no transfer was
+sound; the rows were re-run (batch 2), and batch 0's three rows are kept as
+history only.
 
 ## m2-forced — the silent drop now surfaces (M2 closed at the komodo layer)
 
@@ -321,14 +355,17 @@ Pre-fix: upstream 200 with a sub-less jwt → `add_and_change` early-returns on
 falsy `sub` (`mogh_auth_client/dist/tokens.js`: `if (!user_id) return;`), zero
 TOKENS transitions, reload lands on `/login` with **no signal**.
 
-Post-fix run (batch 0, pre-pre-arm build — kept per the † reasoning above): the
-same drive (route interception rewrites `body.jwt` to the
-sub-less token; upstream still 200), and the fix-dependent arm PASSED:
+Post-fix run (batch 2, final build — canonical; batch 0 had already passed the
+same arms on the pre-pre-arm build, historical): the same drive (route
+interception rewrites `body.jwt` to the sub-less token; upstream still 200),
+exchange at `ts=1790942436.108`:
 
 ```
-PASS exchanged (sub-less) jwt never lands in the token store (silent drop)      (pre-fix arm, still true)
-PASS silent drop path: reload lands on /login (observed /login)                 (pre-fix arm, still true)
-PASS post-fix: drop flag surfaced in-document on the login page                 (evidence-flag + late-success-redirect arm — NEW)
+PASS token-store shim evidenced (>=1 TOKENS row captured)
+PASS upstream exchange 200 observed (the drop is client-side; ts=1790942436.108)
+PASS exchanged (sub-less) jwt never lands in the token store (silent drop)
+PASS silent drop path: reload lands on /login (observed /login)
+PASS post-fix: drop flag surfaced in-document on the login page
 ```
 
 The drop is detected by the settlement listener (`initRedeemGate`: success
@@ -344,16 +381,26 @@ default raced exactly this probe). The library-level drop itself is upstream's
 Pre-fix: replayed `/?redeem_ready=true` → 401 → no navigation for 8 s, last
 loader state `on` indefinitely (eternal spinner), URL keeping `redeem_ready=true`.
 
-Post-fix run (batch 0, pre-pre-arm build — kept per the † reasoning above): the
-two pre-fix arms SKIPped as designed, both fix-dependent arms PASSED:
+Post-fix run (batch 2, final build — canonical): the two pre-fix arms SKIPped
+as designed, both fix-dependent arms PASSED (replay 401 at
+`ts=1790942487.047`):
 
 ```
-PASS replayed exchange 401 observed (one-shot consumed session; ts=1790918528.219)
-SKIP (pre-fix mechanism assertion; not applicable with --post-fix) pre-fix: no navigation for 8s …
-SKIP (pre-fix mechanism assertion; not applicable with --post-fix) pre-fix: eternal LoadingScreen …
+PASS replayed exchange 401 observed (one-shot consumed session; ts=1790942487.047)
+SKIP (pre-fix mechanism assertion; not applicable with --post-fix) pre-fix: no navigation for 8s after the 401 (URL still redeem_ready; observed /login)
+SKIP (pre-fix mechanism assertion; not applicable with --post-fix) pre-fix: eternal LoadingScreen (still up at end of observation; last state: off)
 PASS post-fix: in-document convergence to /login (final /login; document loads for the replay: 1)
 PASS zero-residual 60s window (unauth-or-401/403-or-auth-5xx app rows: 0; failed ws handshakes: 0)
 ```
+
+Batch 0's copy of this row (pre-pre-arm build — historical, and instructive):
+the SAME two fix-dependent arms PASSED, but the run's own ndjson also carried
+the −16 ms rows documented above and as PRE-ARM PROOF below — the reason this
+row could not stand on batch 0. Batch 2's ndjson shows the pre-arm engaged:
+between the replay document load (`1790942486.976`) and the exchange dispatch,
+the fetch shim logged **zero** rows — the exchange is that document's first API
+call — where batch 0 had the two auth-bearing provider reads at −2 ms (shim) /
+−16 ms (wire).
 
 The settled-failed path converged the SAME document to `/login` — the
 replay produced **exactly one** document load (no sanitize reload, no
@@ -489,6 +536,27 @@ redeem document loads at `…315199`, the exchange dispatch fetch goes out at
 [doc load → 200]**; the LoadingScreen row lands doc+117 ms; zero stale-tail
 fetches to `/user|/read` anywhere before the 200. The scenario-map arm ("zero such
 rows") holds on the final build; the m1 acceptance criterion is met.
+
+### PRE-ARM PROOF — the parent-first gap fired in a second scenario (batch-0 `exchange-error`)
+
+Independent confirmation of the root cause, from a run whose scenario the
+earlier revision of this document believed untouched by the pre-arm change.
+Batch 0's `exchange-error` ndjson (pre-pre-arm build): the replay document
+dispatched auth-bearing `GET /user` + `POST /read/GetCoreInfo` BEFORE the
+exchange — the fetch shim logged both at `ts_ms 1790918528200` against the
+exchange dispatch at `…528202` (−2 ms), the wire shows their completions at
+`1790918528.2028` / `…202812` against the 401 at `1790918528.2185` (−16 ms),
+and Caddy pinned both rows to the redeem document
+(`Referer: …/?redeem_ready=true`). Same shape as m1's leak: provider reads
+committed while the gate was still open. They answered 200 (the leg-1 jwt was
+still stored), so nothing rejected — the harm here is evidentiary, not budget:
+the gap was real outside `m1-seeded`, and this document mis-assessed its own
+evidence in claiming otherwise.
+
+Batch 2 (final build) closes the loop in this same scenario: between the replay
+document load (`1790942486.976`) and the exchange dispatch, the fetch shim
+logged zero rows — the exchange is the document's first API call (see the
+`exchange-error` section above).
 
 ---
 
@@ -630,13 +698,37 @@ express this):**
   redemption instant, so the client-side failure paths can be designed against
   reality rather than the mock's permissive behavior.
 
+### (f) mogh_ui — `backto` query param flows unvalidated into `location.replace`
+
+**Title:** `Open redirect: the `backto` query param is passed to `location.replace` without any origin validation`
+
+- Code-verified (no harness scenario drives a hostile `backto`):
+  `mogh_ui/dist/auth/login/index.js` `maybeNavigate` →
+  `location.replace(new URLSearchParams(location.search).get("backto") ?? "/")`
+  — any absolute URL in `backto` navigates the user off-site after login, and
+  hosts inherit the shape (komodo's late-success redirect reads `backto` the
+  same way).
+- Ask: same-origin validation (or relative-path-only) upstream, so every
+  embedder inherits the fix.
+
+### One-line ask (not drafted)
+
+- mogh_ui: consider exporting the token-store key and redeem lifecycle seams so
+  hosts can unit-test redeem integrations without a full harness.
+
 ---
 
 *Metadata (post-fix section): produced by the post-fix runs — batch 0 2026-10-02
 02:14–02:25 -03:00 (HEAD `9d9a38a88`, image `5190032c1dbe`, verify.mjs as
 committed at `fa53da3c0`); batch 1 (final) 02:51–02:55 -03:00 (HEAD
 `641f966da`, image `28f89a5be8af`, verify.mjs with `641f966da`'s one-predicate
-m1 scoping fix). Harness per README "Run" (podman shim,
-`compose/oidc-dev.compose.yaml`, `oidc-provider@9.12.2`); raw ndjson evidence
-in gitignored `compose/oidc-dev/out/` (batch 1 files are the surviving
-evidence for its rows); run stdout archived by the task outside the repo.*
+m1 scoping fix); batch 2 (final, canonical) 08:58–09:04 -03:00 (same HEAD
+`641f966da`, same image `28f89a5be8af` — id re-verified on the running
+container before the batch; the re-run rows are `latency` 08:58, `m2-forced`
+09:00, `exchange-error` 09:01, each ≥16 s apart). Harness per README "Run"
+(podman shim, `compose/oidc-dev.compose.yaml`, `oidc-provider@9.12.2`); raw
+ndjson evidence in gitignored `compose/oidc-dev/out/` (batch 2 files are the
+surviving evidence for its three rows, batch 1 for its four); run stdout
+archived by the task outside the repo. All commit hashes are pre-rewrite; full
+history on the fork's `komodo-oidc-login-jwt-redeem-race-fix-1665-archive`
+branch.*
