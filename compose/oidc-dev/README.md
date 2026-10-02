@@ -379,9 +379,10 @@ Notes:
    The seed now skips when a store already exists.
 4. **`hung` pre-fix is NOT an eternal spinner at `DELAY_AUTH_MS=15000`** — the
    plan's §8 row-4 pre-fix cell assumed it. Reality: mogh_ui has no timeout, so
-   the LoadingScreen holds for the full 15 s (asserted: loader-on continuously
-   from landing to the late 200), then the late 200 stores the token and the
-   sanitize reload lands the dashboard — a **slow success**. The eternal
+   the LoadingScreen holds for the full 15 s (asserted: loader-on with **no
+   OBSERVED gap** from landing to the late 200 — the shim polls at 100 ms, so
+   sub-100 ms transitions could hide), then the late 200 stores the token and
+   the sanitize reload lands the dashboard — a **slow success**. The eternal
    spinner only exists for an exchange that NEVER settles, which a finite delay
    sidecar cannot produce; that arm belongs to the post-fix watchdog
    (`--post-fix` asserts the gate dropped BEFORE the late 200 and §7.7's
@@ -409,7 +410,7 @@ Notes:
 | Exchange 200, token stored | `success`, `latency` | exchange 200; authed follow-up ≤3 s; ws 101 + on_login; dashboard rendered; window total ≤4 & sliding ≤4 (+ round-trip ≥ delay in `latency`) | unchanged — these are the regression guard (green pre-fix) |
 | Exchange 200, token dropped (M2) | `m2-forced` | upstream 200 but sub-less jwt never stored; reload lands `/login` | drop flag surfaced in-document on the login page (`komodo-redeem` phase `drop` / notification text) |
 | Exchange error (429 / consumed) | `exchange-error` | replayed exchange 401; no navigation for 8 s; LoadingScreen still up (eternal spinner, M5) | in-document convergence to `/login` (exactly 1 document load) + zero-residual 60 s window |
-| Hung exchange | `hung` | round-trip ≥ 15000 ms; LoadingScreen continuously up until the late 200; slow-success reload documented | watchdog dropped the gate pre-settlement (loader-off before the 200); final landing `/` via §7.7 |
+| Hung exchange | `hung` | round-trip ≥ 15000 ms; LoadingScreen up with no OBSERVED gap until the late 200 (100 ms poll); slow-success reload documented | watchdog dropped the gate pre-settlement (loader-off before the 200); final landing `/` via §7.7 |
 | No token, direct `/` | covered by the drive shape | every scenario's pre-session gate bounce (302 → portal) is asserted implicitly by the drive reaching the interaction page | unchanged |
 | Stale token during redeem (M1) | `m1-seeded` | stale-token authed requests fire inside `[drive start → exchange 200]` (wire: auth+rejected; value: fetch-shim tail) | zero such rows (§7.5 read deferral); fresh `current` pointer observed |
 | Latched errors after settlement | (no dedicated row) | post-reload remount clears latched state implicitly — `success`'s dashboard + ws + authed reads assert the recovered state | unchanged |
@@ -431,9 +432,10 @@ Feeds Task 5's `BASELINE.md`:
 - **`exchange-error`** — **M5 REPRODUCED**: replayed `/?redeem_ready=true` →
   exchange 401 → no navigation (URL keeps `redeem_ready=true`) and the
   LoadingScreen never clears (eternal spinner).
-- **`hung`** — spinner holds the full 15013 ms, then the late 200 converges
-  (slow success). Pre-fix has no watchdog; the "eternal" arm is only reachable
-  with a never-settling exchange.
+- **`hung`** — spinner holds the full 15013 ms (no OBSERVED gap at 100 ms
+  poll granularity), then the late 200 converges (slow success). Pre-fix has
+  no watchdog; the "eternal" arm is only reachable with a never-settling
+  exchange.
 - **`isolation`** — green pre-fix (gate already isolated; regression guard).
 
 ## Layout

@@ -126,7 +126,8 @@ Instrumentation & assertions (`compose/oidc-dev/verify.mjs`, headless chromium):
 - **M1 scenario (seeded explicitly)**: before driving the redeem, inject a stale
   `localStorage["mogh-auth-tokens-v1"]` into the browser context — schema
   `{current, tokens: [{user_id, jwt}]}` holding a well-formed **expired** JWT (signable
-  structure only; the client attaches it blindly and the server 401s it). Assert pre-fix:
+  structure only; the client attaches it blindly and the server rejects it
+  (observed 500 with a bad-signature token, harness 2026-10-02)). Assert pre-fix:
   requests during the redeem window carry the stale token (M1's discriminating signal);
   post-fix (§7.5 landed): zero. Without this seeding, M1 can never reproduce and §7.5's
   deferral would be undecidable — the scenario is mandatory, not optional.
@@ -140,9 +141,11 @@ Instrumentation & assertions (`compose/oidc-dev/verify.mjs`, headless chromium):
   **Failure arms never render the dashboard, so the ≤ 4 window bound is scoped to success
   rows only**; failure rows are owned by the zero-residual assertion below (window:
   settlement + 60 s). Count **app-originated requests that are unauthenticated OR receive
-  401/403** — the quantity the per-IP limiter actually consumes is *failed attempts*, and a
+  401/403 OR an auth-bearing 5xx** — the quantity the per-IP limiter actually consumes is *failed attempts*, and a
   stale-token request carries a (doomed) `authorization` header, so a header-less-only count
-  cannot see the M1 storm this bound exists to prevent. On success rows assert a window
+  cannot see the M1 storm this bound exists to prevent. (Auth-bearing 5xx is in the unit
+  because core answers a bad-signature token with 500, not 401 — harness observation
+  2026-10-02; a 401/403-only count would read the stale-token storm as zero.) On success rows assert a window
   **total** ≤ 4 **and** a sliding-window **max ≤ 4 per any 15 s** (the limiter's default
   window; a fifth failed attempt trips it — `config/core.config.toml:346-351`). Keep the
   header-less count as a secondary metric.
@@ -403,7 +406,7 @@ pre-login URL instead of a login form with a Back button.
 | Exchange error (network / 429 / consumed session) | eternal spinner; toast dies with no navigation (URL stays `redeem_ready=true`) | in-document convergence: token store cleared, params stripped (`history.replaceState`), visible notification, gate drops → `/login`; no document reload, toast survives |
 | Hung exchange (no response) | eternal spinner | watchdog (12 s) flips to the same settled-failed path; a late 200 stores the token and reloads onto `/login` (mogh_ui has no auto-redirect on token appearance), where §7.7's one-shot sends the user to `backto ?? "/"`; komodo never re-triggers |
 | No token, direct `/` | login redirect | unchanged |
-| Stale token in localStorage during redeem (M1) | stale-token 401s fire from always-mounted provider; errors latch | **all three provider-body reads deferred** (§7.5, unconditional: `useUser` poll, `GetCoreInfo`, connect effect); post-settlement residual feed stopped by the **listener-side** `remove_all` (§7.1, synchronous pre-render) so the settlement flip render recomputes `enabled: false` — not by any effect-ordered cleanup, which would race the provider render and let one stale 401 escape |
+| Stale token in localStorage during redeem (M1) | stale-token rejections (observed 500s) fire from always-mounted provider; errors latch | **all three provider-body reads deferred** (§7.5, unconditional: `useUser` poll, `GetCoreInfo`, connect effect); post-settlement residual feed stopped by the **listener-side** `remove_all` (§7.1, synchronous pre-render) so the settlement flip render recomputes `enabled: false` — not by any effect-ordered cleanup, which would race the provider render and let one stale 401 escape |
 | Latched errors after settlement | latched until remount/invalidation | latched redeem-window errors are remounted away by the success reload; post-settlement errors still latch (pre-existing behavior, unchanged scope) |
 | Any non-redeem mutation in flight/failing | unaffected | still unaffected — the gate's subscription is filtered to `ExchangeForJwt` (§7.1) |
 

@@ -367,11 +367,13 @@ function compose(args, env = {}) {
     env: { ...process.env, DOCKER_HOST, ...env },
   });
 }
+const spawnErr = (r) =>
+  r.error ? ` (${r.error.message ?? r.error})` : ""; // SIG failures set only `error`
 function getDelayMs() {
   const r = compose(["exec", "-T", "delay", "printenv", "DELAY_AUTH_MS"]);
   if (r.status !== 0) {
     throw new Error(
-      `cannot read live DELAY_AUTH_MS from the delay container: ${r.stderr?.slice(0, 200)}`,
+      `cannot read live DELAY_AUTH_MS from the delay container: ${r.stderr?.slice(0, 200)}${spawnErr(r)}`,
     );
   }
   return parseInt(String(r.stdout).trim(), 10) || 0;
@@ -380,7 +382,7 @@ async function setDelayMs(ms) {
   if (getDelayMs() === ms) return;
   const r = compose(["up", "-d", "delay"], { DELAY_AUTH_MS: String(ms) });
   if (r.status !== 0) {
-    throw new Error(`up -d delay failed: ${r.stderr?.slice(0, 300)}`);
+    throw new Error(`up -d delay failed: ${r.stderr?.slice(0, 300)}${spawnErr(r)}`);
   }
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
@@ -392,6 +394,37 @@ async function setDelayMs(ms) {
     await sleep(500);
   }
   throw new Error(`delay knob did not reach ${ms}ms within 60s`);
+}
+// Crash-safety: a SIGINT mid-`hung` (or any failed restore) leaves
+// DELAY_AUTH_MS set, and a later delayMs:null scenario would silently drive
+// with a leftover knob. Every scenario therefore normalizes its EXPECTED knob
+// (def.delayMs ?? 0) at start — loudly when a non-zero leftover was found —
+// and the suite's resting state is 0.
+async function normalizeKnob(expectedMs) {
+  const live = getDelayMs();
+  if (live !== expectedMs) {
+    if (live !== 0) {
+      console.error(
+        `WARNING: leftover delay knob DELAY_AUTH_MS=${live} (expected ${expectedMs}) — resetting before this scenario`,
+      );
+    }
+    await setDelayMs(expectedMs);
+  }
+}
+// Signal path must be synchronous (spawnSync) so the recreate completes
+// before the process dies.
+function restoreKnobSync() {
+  compose(["up", "-d", "delay"], { DELAY_AUTH_MS: "0" });
+}
+let signalSeen = false;
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, () => {
+    if (signalSeen) return;
+    signalSeen = true;
+    console.error(`\n${sig} received — restoring delay knob to 0 before exit`);
+    restoreKnobSync();
+    process.exit(sig === "SIGINT" ? 130 : 143);
+  });
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -423,7 +456,11 @@ async function reportChecks(checks) {
     }
     let ok = false;
     try {
-      ok = (await c.fn()) !== false; // async checks awaited — a Promise must never count as truthy
+      // Strict-true: a check must return TRUE to pass. `!== false` was
+      // fail-open for `undefined` (review: the eternal-spinner check returned
+      // undefined when zero LOADER rows were captured and PASSed). Every check
+      // fn in this file returns a boolean or throws.
+      ok = (await c.fn()) === true;
     } catch (e) {
       console.error(`    ↳ error: ${e.message ?? e}`);
       ok = false;
@@ -603,7 +640,7 @@ SCENARIOS.success = { run: async ({ context, page, rows, log }) => {
   },
 };
 
-SCENARIOS.latency = { run: async ({ context, page, rows, log }) => {
+SCENARIOS.latency = { delayMs: 2000, run: async ({ context, page, rows, log, delayMs }) => {
   const ex = await waitForLog(
     (e) => reqUri(e).includes("ExchangeForJwt") && statusOf(e) === 200,
     30_000,
@@ -616,15 +653,15 @@ SCENARIOS.latency = { run: async ({ context, page, rows, log }) => {
   const checks = successChecks(log, { rows, finalUrl });
   checks.push(
     check(
-      `observed exchange round-trip >= DELAY_AUTH_MS (2000ms; observed ${observedMs.toFixed(0)}ms)`,
-      () => observedMs >= 2000 * 0.98,
+      `observed exchange round-trip >= DELAY_AUTH_MS (${delayMs}ms; observed ${observedMs.toFixed(0)}ms)`,
+      () => observedMs >= delayMs * 0.98,
     ),
   );
   return { checks };
   },
 };
 
-SCENARIOS["m1-seeded"] = { run: async ({ rows, log }) => {
+SCENARIOS["m1-seeded"] = { delayMs: 1500, run: async ({ rows, log }) => {
   // DELAY_AUTH_MS=1500 widens the redeem window so the seeded stale-token
   // queries deterministically fire DURING it (spec §6: the knob exists to
   // widen the race instead of relying on lucky timing). Under any watchdog.
@@ -643,9 +680,11 @@ SCENARIOS["m1-seeded"] = { run: async ({ rows, log }) => {
   // signal is the stale-token-authenticated request inside the window, not the
   // exact rejection code, so 401/403/5xx all count.
   const driveStartSec = logSec(log[0] ?? ex) - 0.001;
+  // (\/|$): `GET /user` has no trailing slash — `\/` alone silently dropped
+  // it and the row was only ever matched via GetCoreInfo (review round 2).
   const staleRequest = (e) =>
     isApi(e) &&
-    /^\/(user|read)\//.test(reqUri(e)) &&
+    /^\/(user|read)(\/|$)/.test(reqUri(e)) &&
     authPresent(e) &&
     (statusOf(e) === 401 || statusOf(e) === 403 || statusOf(e) >= 500);
   const staleCandidates = log.filter(
@@ -658,6 +697,16 @@ SCENARIOS["m1-seeded"] = { run: async ({ rows, log }) => {
     (r) => r.kind === "fetch" && r.auth_tail === STALE_TAIL && r.ts_ms <= logMs(ex),
   );
   await sleep(8_000); // let the post-exchange reload + dashboard settle
+  // Instrumentation liveness: an ABSENCE check (the post-fix arms) is only
+  // meaningful if the shim provably captured something (review round 2 —
+  // m2's shim-evidenced guard, applied to m1's negative arms too).
+  const shimLive = () => {
+    if (!rows.some((r) => r.kind === "fetch" || r.kind === "tokens")) {
+      throw new Error(
+        "instrumentation dead: zero FETCH/TOKENS rows captured — absence checks are meaningless",
+      );
+    }
+  };
   const checks = [
     check(
       `exchange 200 observed (pending window closed; ts=${ex.ts.toFixed(3)})`,
@@ -672,21 +721,32 @@ SCENARIOS["m1-seeded"] = { run: async ({ rows, log }) => {
     ),
     check(
       `stale token VALUE confirmed on those requests (fetch shim tail …${STALE_TAIL})`,
-      () => (POST_FIX ? !staleFetch : !!staleFetch),
+      () => {
+        if (POST_FIX) {
+          shimLive();
+          return !staleFetch;
+        }
+        return staleFetch !== undefined;
+      },
     ),
     check(
       "fresh token stored after the exchange (current pointer moved off stale-user)",
       () =>
-        rows.some(
-          (r) =>
-            r.kind === "tokens" &&
-            r.ts_ms > logMs(ex) &&
-            r.detail &&
-            // add_and_change KEEPS other users' entries (multi-account store),
-            // so the store string still contains the stale token — the M1-
-            // relevant transition is the CURRENT pointer moving to the fresh id.
-            !r.detail.includes('"current":"stale-user"'),
-        ),
+        rows.some((r) => {
+          if (r.kind !== "tokens" || r.ts_ms <= logMs(ex) || !r.detail) return false;
+          try {
+            // detail is the console text "TOKENS <ts> <store-json>"
+            const store = JSON.parse(r.detail.slice(r.detail.indexOf("{")));
+            return (
+              store &&
+              typeof store === "object" &&
+              store.current != null &&
+              store.current !== "stale-user"
+            );
+          } catch {
+            return false; // unparsable row is not evidence of the transition
+          }
+        }),
     ),
   ];
   return { checks };
@@ -777,6 +837,10 @@ SCENARIOS["exchange-error"] = { run: async ({ page, rows, log }) => {
     "first ExchangeForJwt 200",
   );
   await sleep(5_000); // let the first login settle (reload -> dashboard)
+  // Anchor for leg-2 (post-replay) observations: the eternal-spinner predicate
+  // must only consider LOADER rows captured AFTER the goto — leg 1's redeem
+  // spinner must not satisfy it (review round 2).
+  const replayGotoMs = Date.now();
   await page.goto(`${KOMODO_ORIGIN}/?redeem_ready=true`, {
     timeout: 30_000,
     waitUntil: "domcontentloaded",
@@ -791,7 +855,9 @@ SCENARIOS["exchange-error"] = { run: async ({ page, rows, log }) => {
   const urlAtObserve = new URL(page.url());
   await sleep(60_000); // the zero-residual window itself — OBSERVE it (C-018)
   const residual = residualRows(log, settleSec, 60);
-  const lastLoader = [...rows].reverse().find((r) => r.kind === "loader");
+  const lastLoader = rows
+    .filter((r) => r.kind === "loader" && r.ts_ms >= replayGotoMs)
+    .at(-1);
   const finalUrl = new URL(page.url());
   // Document rows for the replayed /?redeem_ready=true navigation: post-fix the
   // settled-failed path converges IN-DOCUMENT (§7.2), so there must be exactly
@@ -819,7 +885,14 @@ SCENARIOS["exchange-error"] = { run: async ({ page, rows, log }) => {
     ),
     check(
       `pre-fix: eternal LoadingScreen (still up at end of observation; last state: ${lastLoader ? lastLoader.state : "none"})`,
-      () => lastLoader && lastLoader.state === "on",
+      () => {
+        if (!lastLoader) {
+          throw new Error(
+            "loader never observed after the replay goto — cannot distinguish eternal spinner from a dead instrument",
+          );
+        }
+        return lastLoader.state === "on";
+      },
       { preFixOnly: true },
     ),
     check(
@@ -842,7 +915,7 @@ SCENARIOS["exchange-error"] = { run: async ({ page, rows, log }) => {
   },
 };
 
-SCENARIOS.hung = { run: async ({ page, rows, log }) => {
+SCENARIOS.hung = { delayMs: 15_000, run: async ({ page, rows, log, delayMs }) => {
   // DELAY_AUTH_MS=15000 — past the fix's 12s watchdog. PRE-FIX REALITY (§8 row
   // 4, verified): there is no watchdog, so the LoadingScreen persists for the
   // FULL delay and the late 200 then stores the token and sanitize-reloads to
@@ -873,11 +946,11 @@ SCENARIOS.hung = { run: async ({ page, rows, log }) => {
   const residual = residualRows(log, logSec(ex), 60);
   const checks = [
     check(
-      `observed exchange round-trip >= DELAY_AUTH_MS (15000ms; observed ${observedMs.toFixed(0)}ms)`,
-      () => observedMs >= 15_000 * 0.98,
+      `observed exchange round-trip >= DELAY_AUTH_MS (${delayMs}ms; observed ${observedMs.toFixed(0)}ms)`,
+      () => observedMs >= delayMs * 0.98,
     ),
     check(
-      `pre-fix: LoadingScreen up continuously during [redeem landing -> late 200] (${loaderOn.length ? (exMs - loaderOn[0].ts_ms).toFixed(0) : "no loader-on"}ms observed; gap-off=${!!gapOff})`,
+      `pre-fix: LoadingScreen up with no OBSERVED gap during [redeem landing -> late 200] (${loaderOn.length ? (exMs - loaderOn[0].ts_ms).toFixed(0) : "no loader-on"}ms observed; gap-off=${!!gapOff}; 100ms poll can miss sub-100ms transitions)`,
       () => loaderOn.length >= 1 && !gapOff,
       { preFixOnly: true },
     ),
@@ -964,20 +1037,24 @@ SCENARIOS.isolation = { run: async ({ page, rows, log }) => {
 // ---------------------------------------------------------------------------
 async function runScenario(name) {
   const def = SCENARIOS[name];
-  if (!def) throw new Error(`unknown scenario ${name}`);
-  const delayMs =
-    name === "latency" ? 2000 : name === "hung" ? 15_000 : name === "m1-seeded" ? 1500 : null;
+  if (!def) {
+    throw new Error(
+      `unknown scenario "${name}" — valid: ${Object.keys(SCENARIOS).join(", ")}, all`,
+    );
+  }
+  const delayMs = def.delayMs ?? null;
   console.log(`\n=== scenario ${name}${POST_FIX ? " (--post-fix)" : ""} ===`);
   const rows = [
     { kind: "meta", scenario: name, postFix: POST_FIX, delayMs, startedAt: new Date().toISOString() },
   ];
   let browser;
   let pass = false;
+  let knobOk = true; // a failed restore must FAIL the run, not just log
   try {
-    if (delayMs !== null) {
-      await setDelayMs(delayMs);
-      console.log(`delay knob active: DELAY_AUTH_MS=${delayMs}`);
-    }
+    // Normalize FIRST: a leftover knob from a crashed earlier run (SIGINT
+    // mid-hung, failed restore) would silently poison THIS scenario's drive.
+    await normalizeKnob(delayMs ?? 0);
+    if (delayMs !== null) console.log(`delay knob active: DELAY_AUTH_MS=${delayMs}`);
     tailer.start();
     browser = await chromium.launch();
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
@@ -987,7 +1064,7 @@ async function runScenario(name) {
     attachConsole(page, rows);
     if (def.preDrive) await def.preDrive(context); // BEFORE drive: the exchange fires during it
     await drive(page);
-    const { checks } = await def.run({ context, page, rows, log: tailer.entries });
+    const { checks } = await def.run({ context, page, rows, log: tailer.entries, delayMs });
     pass = await reportChecks(checks);
   } catch (e) {
     console.error(`FAIL scenario driver error: ${e.message ?? e}`);
@@ -1020,8 +1097,16 @@ async function runScenario(name) {
     );
     console.log(`ndjson: ${path.join(OUT_DIR, name)}.ndjson (${rows.length} rows)`);
     if (browser) await browser.close().catch(() => {});
-    if (delayMs !== null) await setDelayMs(0).catch((e) => console.error(`knob restore failed: ${e.message}`));
+    // Restore unconditionally (every scenario's expected resting state is 0,
+    // including the delayMs:null rows that normalized a leftover away).
+    try {
+      if (getDelayMs() !== 0) await setDelayMs(0);
+    } catch (e) {
+      console.error(`FAIL knob restore: ${e.message ?? e}`);
+      knobOk = false;
+    }
   }
+  if (!knobOk) pass = false; // verdict computed after the finally block runs
   console.log(`SCENARIO ${name} ${pass ? "PASS" : "FAIL"}`);
   return pass;
 }
@@ -1046,8 +1131,10 @@ if (SCEN === "all") {
     allPass = (await runScenario(name)) && allPass;
   }
   console.log(`\nALL SCENARIOS ${allPass ? "PASS" : "FAIL"}`);
-  process.exit(allPass ? 0 : 1);
+  // exitCode + natural exit (not process.exit): a hard exit can truncate
+  // buffered stdout when the output is piped, and Task 5 parses these lines.
+  process.exitCode = allPass ? 0 : 1;
+} else {
+  const pass = await runScenario(SCEN);
+  process.exitCode = pass ? 0 : 1;
 }
-
-const pass = await runScenario(SCEN);
-process.exit(pass ? 0 : 1);
