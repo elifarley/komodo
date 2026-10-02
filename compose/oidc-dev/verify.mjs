@@ -184,14 +184,19 @@ const logMs = (e) => logSec(e) * 1000;
 const exchangeRows = (log) =>
   log.filter((e) => reqUri(e).includes("/auth/login/ExchangeForJwt"));
 
-// §6 disjunct "unauthenticated OR 401/403", with the exclusion list applied
-// FIRST: /auth/login/* without an authorization header is auth-surface
-// discovery by design (GetLoginOptions; the header-less ExchangeForJwt POST)
-// and is exempt from both disjuncts.
+// §6 disjunct — ONE count unit everywhere (spec §6 as amended):
+// "unauthenticated OR 401/403 OR an auth-bearing 5xx". The 5xx term is not
+// pedantry: on this core a bad-signature (escaped stale) token manifests as an
+// AUTH-BEARING 500 on /user + /read, which a 401/403-only unit would read as
+// zero. Shared by the success-window bound (windowBoundChecks) and the
+// zero-residual window (residualRows). The /auth/login/* header-less
+// exclusion stays FIRST: auth-surface discovery (GetLoginOptions, the
+// header-less ExchangeForJwt POST) is exempt from both disjuncts by design.
 const unauthOrFail = (e) => {
-  if (!authPresent(e) && reqUri(e).startsWith("/auth/login/")) return false;
+  const auth = authPresent(e);
+  if (!auth && reqUri(e).startsWith("/auth/login/")) return false;
   const st = statusOf(e);
-  return !authPresent(e) || st === 401 || st === 403;
+  return !auth || st === 401 || st === 403 || (st >= 500 && auth);
 };
 
 // ---------------------------------------------------------------------------
@@ -519,11 +524,11 @@ function windowBoundChecks(log) {
     bad,
     checks: [
       check(
-        `success-row unauth-or-401 window total <= 4 (observed ${bad.length})`,
+        `success-row unauth-or-401/403-or-auth-5xx window total <= 4 (observed ${bad.length})`,
         () => bad.length <= 4,
       ),
       check(
-        `success-row unauth-or-401 sliding 15s max <= 4 (observed ${slideMax})`,
+        `success-row unauth-or-401/403-or-auth-5xx sliding 15s max <= 4 (observed ${slideMax})`,
         () => slideMax <= 4,
       ),
     ],
@@ -601,7 +606,7 @@ async function flushWsRow(context) {
   }
 }
 
-// Zero-residual window (failure rows): zero unauth-or-401/403 app requests and
+// Zero-residual window (failure rows): zero unauth-or-401/403-or-auth-5xx app requests and
 // zero FAILED ws handshakes (status != 101) in the 60s AFTER settlement — the
 // settlement row itself is excluded (strict >): the replayed exchange 401 IS
 // the settlement, and mogh_ui attaches the still-stored jwt to it, so counting
@@ -903,13 +908,13 @@ SCENARIOS["exchange-error"] = { run: async ({ page, rows, log }) => {
       { fixDependent: true },
     ),
     check(
-      `zero-residual 60s window (unauth-or-401 app rows: ${residual.count}; failed ws handshakes: ${residual.wsFails})`,
+      `zero-residual 60s window (unauth-or-401/403-or-auth-5xx app rows: ${residual.count}; failed ws handshakes: ${residual.wsFails})`,
       () => residual.count === 0 && residual.wsFails === 0,
       { fixDependent: true },
     ),
   ];
   console.log(
-    `    ↳ observation (this phase): ${residual.count} unauth-or-401 rows, ${residual.wsFails} failed ws handshakes in the 60s window`,
+    `    ↳ observation (this phase): ${residual.count} unauth-or-401/403-or-auth-5xx rows, ${residual.wsFails} failed ws handshakes in the 60s window`,
   );
   return { checks };
   },
@@ -964,7 +969,7 @@ SCENARIOS.hung = { delayMs: 15_000, run: async ({ page, rows, log, delayMs }) =>
       () => Date.now() - exMs >= 20_000, // guaranteed by the 60s residual window above
     ),
     check(
-      `post-fix: zero-residual 60s window after the watchdog settlement (unauth-or-401: ${residual.count}; failed ws: ${residual.wsFails})`,
+      `post-fix: zero-residual 60s window after the watchdog settlement (unauth-or-401/403-or-auth-5xx: ${residual.count}; failed ws: ${residual.wsFails})`,
       () => residual.count === 0 && residual.wsFails === 0,
       { fixDependent: true },
     ),
