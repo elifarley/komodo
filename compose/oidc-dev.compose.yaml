@@ -54,9 +54,13 @@ services:
       KOMODO_DATABASE_URI: mongodb://mongo:27017/komodo?replicaSet=rs0
       KOMODO_HOST: https://komodo.oidctest.localhost
       KOMODO_LOCAL_AUTH: "true"
-      KOMODO_OIDC_ENABLED: "false"        # flipped by Task 3's mounted config
-      KOMODO_OIDC_AUTO_REDIRECT: "false"  # pinned per spec §6 — M3/M6 discrimination
-      KOMODO_JWT_SECRET: oidc-dev-jwt-secret-not-for-production
+      # Precedence rule (bin/core/src/config.rs:211-213): komodo env vars
+      # OVERRIDE file config — `env.komodo_oidc_enabled.unwrap_or(config.oidc_enabled)`,
+      # same for oidc_auto_redirect and jwt_secret. An env pin here would
+      # silently defeat Task 3's config flip, so the OIDC toggles
+      # (oidc_enabled, oidc_auto_redirect) and jwt_secret live ONLY in
+      # compose/oidc-dev/core-config.toml — it is the single source of truth
+      # for those values.
     ports:
       - "9120:9120"
     volumes:
