@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-// Scenario driver for the OIDC redeem-race harness (moghtech/komodo#1665, spec §6).
+// Scenario driver for the OIDC redeem-race harness (moghtech/komodo#1665;
+// scenario matrix documented in README "Verify suite").
 //
 // Usage:
 //   node verify.mjs <scenario> [--post-fix]
 //     scenario: success | latency | m1-seeded | m2-forced | exchange-error | hung |
 //               isolation | all
-//     --post-fix  additionally enforces the FIX-DEPENDENT assertions (spec §7/§8
-//                 post-fix column). Default OFF: pre-fix runs must PASS on the
-//                 mechanism-reproduction assertions alone (Phase-1 posture), and
+//     --post-fix  additionally enforces the FIX-DEPENDENT assertions (the
+//                 post-fix arms in README's row->scenario map). Default OFF:
+//                 pre-fix runs must PASS on the
+//                 mechanism-reproduction assertions alone (pre-fix posture), and
 //                 a skipped fix-dependent check is reported SKIP, never PASS.
 //
 // Evidence sources:
@@ -135,13 +137,14 @@ const isKomodoRow = (e) => reqHost(e).split(":")[0] === KOMODO_HOSTNAME;
 
 // App-originated API surface (the UI's fetch + ws traffic). Document navigations
 // and static assets are excluded — they are gate/browser artifacts, not the
-// app-originated requests §6 bounds.
+// app-originated requests this suite bounds.
 const API_RE = /^\/(user|read|execute|write|ws|auth\/login)(\/|$)/;
 const isApi = (e) => isKomodoRow(e) && API_RE.test(reqUri(e));
 
 const headerVal = (e, name, which = "request") => {
-  // Field reality (Task 4 Step 4): requests nest under `request.headers`, but
-  // responses use `resp_headers` DIRECTLY as the header map (no extra level).
+  // Field reality (observed during the suite's build): requests nest under
+  // `request.headers`, but responses use `resp_headers` DIRECTLY as the header
+  // map (no extra level).
   const headers = which === "request" ? e?.request?.headers ?? {} : e?.resp_headers ?? {};
   for (const k of Object.keys(headers)) {
     if (k.toLowerCase() === name) {
@@ -184,7 +187,8 @@ const logMs = (e) => logSec(e) * 1000;
 const exchangeRows = (log) =>
   log.filter((e) => reqUri(e).includes("/auth/login/ExchangeForJwt"));
 
-// §6 disjunct — ONE count unit everywhere (spec §6 as amended):
+// Bad-row disjunct — ONE count unit everywhere (amended once 500s were
+// observed; see BASELINE.md "Rejection code is 500, not 401"):
 // "unauthenticated OR 401/403 OR an auth-bearing 5xx". The 5xx term is not
 // pedantry: on this core a bad-signature (escaped stale) token manifests as an
 // AUTH-BEARING 500 on /user + /read, which a 401/403-only unit would read as
@@ -223,7 +227,7 @@ const STALE_TAIL = jwtTail(STALE_JWT);
 
 // Structurally valid, sub-LESS jwt for the M2 forced drop: jwtDecode(jwt).sub
 // is falsy -> add_and_change silently returns (tokens.js) while the exchange
-// itself 200s — the exact silent-drop shape of §8 row 2.
+// itself 200s — the exact silent-drop shape the m2-forced row asserts.
 const SUBLESS_JWT = [
   "eyJhbGciOiJIUzI1NiJ9",
   Buffer.from(JSON.stringify({ exp: 9999999999 })).toString("base64url"),
@@ -288,7 +292,7 @@ async function attachShim(context) {
 
 async function seedStaleToken(context) {
   // addInitScript runs BEFORE any page script (so mogh_auth_client's
-  // module-load IIFE reads the seeded store — jwt() has no re-sync, §4) — but
+  // module-load IIFE reads the seeded store — jwt() has no re-sync) — but
   // it ALSO runs on EVERY document. Guard on an existing store: seed only the
   // first document, otherwise the post-exchange reload would re-poison the
   // store with the stale token and the post-exchange reads would 500 again
@@ -478,9 +482,9 @@ async function reportChecks(checks) {
 const check = (name, fn, opts = {}) => ({ name, fn, ...opts });
 
 // ---------------------------------------------------------------------------
-// Shared success-row window predicates (§6). Window: [callback 303 -> dashboard
+// Shared success-row window predicates. Window: [callback 303 -> dashboard
 // rendered], where dashboard rendered = the exchange 200 happened and a
-// subsequent authenticated GET /user returned 200 (§6 allows a cheaper concrete
+// subsequent authenticated GET /user returned 200 (a cheaper concrete
 // stand-in for the DOM marker; final-URL post-sanitize is asserted alongside).
 // ---------------------------------------------------------------------------
 function anchorRows(log) {
@@ -668,8 +672,8 @@ SCENARIOS.latency = { delayMs: 2000, run: async ({ context, page, rows, log, del
 
 SCENARIOS["m1-seeded"] = { delayMs: 1500, run: async ({ rows, log }) => {
   // DELAY_AUTH_MS=1500 widens the redeem window so the seeded stale-token
-  // queries deterministically fire DURING it (spec §6: the knob exists to
-  // widen the race instead of relying on lucky timing). Under any watchdog.
+  // queries deterministically fire DURING it (the knob exists to widen the
+  // race instead of relying on lucky timing). Under any watchdog.
   const ex = await waitForLog(
     (e) => reqUri(e).includes("ExchangeForJwt") && statusOf(e) === 200,
     30_000,
@@ -679,7 +683,7 @@ SCENARIOS["m1-seeded"] = { delayMs: 1500, run: async ({ rows, log }) => {
   // Wire-level M1 signal: /user or /read/* rows during the pending window that
   // carry an authorization header (Caddy shows presence, value REDACTED) and
   // are REJECTED, between drive start (first komodo row in this run) and the
-  // exchange. REALITY (documented deviation from the plan's "server 401s it"):
+  // exchange. REALITY (deviation from the original "server 401s it" assumption):
   // core answers a structurally-valid but bad-signature jwt with **500** on
   // /user and /read/GetCoreInfo (observed 2026-10-02) — the discriminating
   // signal is the stale-token-authenticated request inside the window, not the
@@ -731,7 +735,7 @@ SCENARIOS["m1-seeded"] = { delayMs: 1500, run: async ({ rows, log }) => {
     check(
       `stale-token requests fire during the redeem window (wire: auth+rejected in [drive start -> exchange 200]; observed ${staleCandidates.length}, statuses ${[...new Set(staleCandidates.map(statusOf))].join("/") || "-"})`,
       () => {
-        if (POST_FIX) return staleCandidates.length === 0; // §7.5: reads deferred
+        if (POST_FIX) return staleCandidates.length === 0; // fix: provider-subtree reads deferred
         return staleCandidates.length >= 1;
       },
     ),
@@ -815,8 +819,8 @@ SCENARIOS["m2-forced"] = {
       `silent drop path: reload lands on /login (observed ${finalUrl.pathname})`,
       () => finalUrl.pathname.startsWith("/login"),
     ),
-    // FIX-DEPENDENT (spec §7.3/§8 row 2): the drop flag surfaced on the login
-    // page ("session could not be stored" notification / sessionStorage flag).
+    // FIX-DEPENDENT (the silent drop now surfaces): the drop flag surfaced on
+    // the login page ("session could not be stored" notification / sessionStorage flag).
     check(
       "post-fix: drop flag surfaced in-document on the login page",
       async () => {
@@ -876,7 +880,7 @@ SCENARIOS["exchange-error"] = { run: async ({ page, rows, log }) => {
     .at(-1);
   const finalUrl = new URL(page.url());
   // Document rows for the replayed /?redeem_ready=true navigation: post-fix the
-  // settled-failed path converges IN-DOCUMENT (§7.2), so there must be exactly
+  // settled-failed path converges IN-DOCUMENT (no reload), so there must be exactly
   // ONE (the goto itself); a reload would show a second.
   const replayDocRows = log.filter(
     (e) =>
@@ -932,8 +936,8 @@ SCENARIOS["exchange-error"] = { run: async ({ page, rows, log }) => {
 };
 
 SCENARIOS.hung = { delayMs: 15_000, run: async ({ page, rows, log, delayMs }) => {
-  // DELAY_AUTH_MS=15000 — past the fix's 12s watchdog. PRE-FIX REALITY (§8 row
-  // 4, verified): there is no watchdog, so the LoadingScreen persists for the
+  // DELAY_AUTH_MS=15000 — past the fix's 12s watchdog. PRE-FIX REALITY
+  // (verified): there is no watchdog, so the LoadingScreen persists for the
   // FULL delay and the late 200 then stores the token and sanitize-reloads to
   // the dashboard (a slow success, NOT an eternal spinner — a finite delay
   // sidecar cannot black-hole the exchange forever; that arm stays with the
@@ -985,11 +989,11 @@ SCENARIOS.hung = { delayMs: 15_000, run: async ({ page, rows, log, delayMs }) =>
       { fixDependent: true },
     ),
     check(
-      `post-fix: watchdog converges (gate drops -> /login with §7.7 late-success redirect)`,
+      `post-fix: watchdog converges (gate drops -> /login, then the late-success redirect recovers)`,
       async () => {
         const u = new URL(page.url());
         // Watchdog fired at ~12s while the exchange was still in flight; the
-        // late 200 (t≈15s) then stores the token and reloads — §7.7's one-shot
+        // late 200 (t≈15s) then stores the token and reloads — the one-shot
         // must send the user on to `/` (never left stranded mid-gate).
         if (u.pathname !== "/") {
           throw new Error(`expected final landing /, at ${u.pathname}${u.search}`);
@@ -1000,7 +1004,7 @@ SCENARIOS.hung = { delayMs: 15_000, run: async ({ page, rows, log, delayMs }) =>
     ),
   ];
   console.log(
-    `    ↳ pre-fix observation: after the late 200 the URL is ${new URL(page.url()).pathname}${new URL(page.url()).search} (slow-success reload; §8 row 4 pre-fix cell updated in README)`,
+    `    ↳ pre-fix observation: after the late 200 the URL is ${new URL(page.url()).pathname}${new URL(page.url()).search} (slow-success reload; the hung row's pre-fix cell in README's scenario map documents this)`,
   );
   return { checks };
   },
@@ -1148,7 +1152,8 @@ if (SCEN === "all") {
   }
   console.log(`\nALL SCENARIOS ${allPass ? "PASS" : "FAIL"}`);
   // exitCode + natural exit (not process.exit): a hard exit can truncate
-  // buffered stdout when the output is piped, and Task 5 parses these lines.
+  // buffered stdout when the output is piped, and the baseline runs parse
+  // these lines.
   process.exitCode = allPass ? 0 : 1;
 } else {
   const pass = await runScenario(SCEN);

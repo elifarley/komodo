@@ -15,7 +15,7 @@ export default function Login(props: {
 }) {
   const userInvalidate = useUserInvalidate();
 
-  // One-shot late-success redirect + silent-drop surfacing (spec §7.7 / M2).
+  // One-shot late-success redirect + silent-drop surfacing.
   // With no flag this effect is a single sessionStorage read, so every
   // unflagged visit behaves exactly as before.
   //
@@ -28,22 +28,22 @@ export default function Login(props: {
     const flag = readRedeemFlag();
     if (!flag) return;
     if (flag.phase === "drop") {
-      // Clear-on-read: the M2 message must not replay on later visits.
+      // Clear-on-read: the silent-drop message must not replay on later visits.
       consumeRedeemFlag();
       notifications.show({
         title: "Login succeeded but the session could not be stored",
         message: "Please log in again.",
         color: "red",
         // Mantine defaults to autoClose: 4000 — a silent-failure notice that
-        // vanishes by ~T+5s would defeat the spec's M2 goal (non-silence) and
+        // vanishes by ~T+5s would defeat the silent-drop goal (non-silence) and
         // race verify.mjs's fix-dependent probe (~T+8s). Must-act toasts stay.
         autoClose: false,
       });
       return;
     }
-    if (!flagFresh(flag)) return; // stale: ignored (§7.3 TTL); lingers harmlessly until tab close
-    // jwt presence, decode-free: any entry in the mogh-auth store (§7.3
-    // schema). The exchanged jwt itself is not available post-reload —
+    if (!flagFresh(flag)) return; // stale: ignored (TTL expiry); lingers harmlessly until tab close
+    // jwt presence, decode-free: any entry in the mogh-auth store schema.
+    // The exchanged jwt itself is not available post-reload —
     // presence plus the fresh flag is the late-success signal; safety rests
     // on the watchdog path having cleared the store before the late success
     // re-stored the token. A corrupt store throws -> caught -> treated as

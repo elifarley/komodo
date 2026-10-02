@@ -33,7 +33,7 @@ services:
       retries: 12
 
   core:
-    # Branch-built UI served by core exactly like production (spec §6.3):
+    # Branch-built UI served by core exactly like production:
     # stage 1 = ui/Dockerfile's builder stage on this branch; stage 2 = the
     # digest-pinned core image with the dist copied to /app/ui.
     # Digest pinned in compose/oidc-dev/.env (KOMODO_CORE_IMAGE) — see README step 1.
@@ -62,7 +62,7 @@ services:
       # Precedence rule (bin/core/src/config.rs:211-213): komodo env vars
       # OVERRIDE file config — `env.komodo_oidc_enabled.unwrap_or(config.oidc_enabled)`,
       # same for oidc_auto_redirect and jwt_secret. An env pin here would
-      # silently defeat Task 3's config flip, so the OIDC toggles
+      # silently defeat the OIDC enable flip in core-config.toml, so the OIDC toggles
       # (oidc_enabled, oidc_auto_redirect) and jwt_secret live ONLY in
       # compose/oidc-dev/core-config.toml — it is the single source of truth
       # for those values.
@@ -84,7 +84,7 @@ services:
   # not survive restarts — fine for a test harness). No mongo dependency: it
   # keeps no durable state. Port 3344 is published on LOOPBACK ONLY for
   # host-side debugging — the mock auto-consents anyone, so it must never be
-  # reachable from the LAN. Task 3's Caddy talks to it over the compose
+  # reachable from the LAN. The Caddy front talks to it over the compose
   # network as http://oidc-mock:3344.
   oidc-mock:
     build:
@@ -103,9 +103,9 @@ services:
     ports:
       - "127.0.0.1:3344:3344"
 
-  # LATENCY KNOB (spec §6): Caddy routes /auth/login/* here; the sidecar adds
+  # LATENCY KNOB: Caddy routes /auth/login/* here; the sidecar adds
   # DELAY_AUTH_MS (real awaited setTimeout — ClientRequest.setTimeout delays
-  # nothing) then pipes to core. Keep it under the §7.1 watchdog (12 s); the
+  # nothing) then pipes to core. Keep it under the fix's 12 s watchdog; the
   # dedicated past-watchdog harness row uses 15000. No build: delay.mjs only
   # imports node:http, so a bare node image + bind mount is the whole service.
   delay:
@@ -121,7 +121,7 @@ services:
 
   # TLS front + forward_auth gate + JSON access log. See compose/oidc-dev/Caddyfile.
   #
-  # PORT REALITY (deviation from the plan draft): 80/443 cannot be published —
+  # PORT REALITY (deviation from the original draft): 80/443 cannot be published —
   # the host's system Caddy owns 80 and rootless podman refuses ports < 1024.
   # Everything publishes on 127.0.0.1:8443 (loopback ONLY: the portal vhost
   # exposes the auto-consenting mock, so this binding is a security boundary,

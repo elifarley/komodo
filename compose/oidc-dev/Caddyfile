@@ -1,7 +1,7 @@
 # Caddy front for the OIDC redeem-race harness (moghtech/komodo#1665).
 #
-# HOST-PORT REALITY (deviation from the plan draft, see compose/oidc-dev/README.md):
-# the plan published 80:80 + 443:443, but on the harness host (a) port 80 is
+# HOST-PORT REALITY (deviation from the original draft, see compose/oidc-dev/README.md):
+# the original sketch published 80:80 + 443:443, but on the harness host (a) port 80 is
 # already owned by the system Caddy and (b) rootless podman cannot publish
 # ports < 1024 at all ("rootlessport cannot expose privileged port", sysctl
 # ip_unprivileged_port_start=1024). The compose file therefore publishes ONLY
@@ -49,7 +49,7 @@ portal.oidctest.localhost:443, portal.oidctest.localhost:8443 {
 komodo.oidctest.localhost:443, komodo.oidctest.localhost:8443 {
 	tls internal
 	# JSON access log incl. request headers — assertion source for wire
-	# behavior (Task 4/5 read this file). roll_disabled because the log is a
+	# behavior (verify.mjs + BASELINE.md read this log). roll_disabled because the log is a
 	# single bind-mounted FILE: Caddy's size rotation renames the file, which
 	# cannot work on a per-file bind mount.
 	log {
@@ -68,11 +68,11 @@ komodo.oidctest.localhost:443, komodo.oidctest.localhost:8443 {
 		forward_auth oidc-mock:3344 {
 			uri /verify
 		}
-		# LATENCY KNOB (spec §6): /auth/login/* goes through the delay sidecar;
+		# LATENCY KNOB: /auth/login/* goes through the delay sidecar;
 		# everything else (UI assets, websockets, API) straight to core. The
 		# delay sidecar is a plain HTTP pipe and cannot upgrade websockets —
 		# which is exactly why only /auth/login/* is routed through it.
-		# DELAY_AUTH_MS must stay under the §7.1 watchdog (12 s); the dedicated
+		# DELAY_AUTH_MS must stay under the fix's 12 s watchdog; the dedicated
 		# past-watchdog harness row uses 15000.
 		@auth path /auth/login/*
 		handle @auth {

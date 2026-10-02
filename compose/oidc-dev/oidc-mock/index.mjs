@@ -7,7 +7,7 @@
 // network (hence the 127.0.0.1 port binding in oidc-dev.compose.yaml).
 //
 // API notes verified against the pinned oidc-provider@9.12.2 source
-// (the task plan was drafted against a version string that does not exist
+// (an earlier draft was written against a version string that does not exist
 // on npm — "11.10.1" — so this file follows v9.12.2's actual API):
 //   1. `provider.Session.get(ctx)` accepts EITHER a Koa context (`ctx.oidc`
 //      set) OR any object with `.req`/`.res` — see lib/models/session.js:51:
@@ -32,7 +32,7 @@ const issuer = process.env.MOCK_ISSUER ?? "https://portal.oidctest.localhost";
 const komodoOrigin =
   process.env.KOMODO_ORIGIN ?? "https://komodo.oidctest.localhost:8443";
 
-// Task-3 reality: oidc-provider v9 derives every discovered endpoint URL from
+// Observed reality: oidc-provider v9 derives every discovered endpoint URL from
 // the REQUEST origin (helpers/oidc_context.js urlFor -> `this.ctx.href`), and
 // Koa derives scheme/host from the socket unless app.proxy is set. Behind
 // Caddy the socket is plain http, so without proxy=true discovery would hand
@@ -171,12 +171,12 @@ http
         return res.writeHead(503).end("lookup error");
       }
       if (session && session.accountId) return res.writeHead(200).end("ok");
-      // AC2 of the caddy task: an unauthenticated BROWSER navigation must be
+      // Harness requirement: an unauthenticated BROWSER navigation must be
       // bounced to the portal (a bare 401 would strand the user and mean the
       // gate is misconfigured). Distinguish navigation from everything else
       // by X-Forwarded-Method, which Caddy's forward_auth subrequest always
       // carries — a direct probe (`curl /verify` with no proxy headers) still
-      // gets the Task-2-documented 401. Non-navigations (the ExchangeForJwt
+      // gets the plain 401 documented for direct probes. Non-navigations (the ExchangeForJwt
       // POST, API calls) also 401 so XHR sees a clean status instead of
       // following a redirect into the portal's HTML.
       const fwdMethod = req.headers["x-forwarded-method"];

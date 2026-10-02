@@ -1,6 +1,6 @@
 // Adds DELAY_AUTH_MS to /auth/login/* only. Caddy routes that path here.
 //
-// WHY a real awaited setTimeout: `ClientRequest.setTimeout` (the plan draft's
+// WHY a real awaited setTimeout: `ClientRequest.setTimeout` (the draft's
 // first idea) only arms a socket-inactivity timeout EVENT with no listener —
 // it delays nothing. The await BEFORE dispatch is the only working delay.
 //
