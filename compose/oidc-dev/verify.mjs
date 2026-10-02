@@ -1046,6 +1046,12 @@ SCENARIOS["exchange-error"] = { run: async ({ context, page, rows, log }) => {
   await sleep(8_000); // N=8s no-navigation observation (pre-fix eternal spinner)
   const urlAtObserve = new URL(page.url());
   await sleep(60_000); // the zero-residual window itself — OBSERVE it (C-018)
+  // Capture page state BEFORE flushWsRow closes the context (page.url() on a
+  // closed page throws — round-9 C-006 lesson applied to this scenario too).
+  const lastLoader = rows
+    .filter((r) => r.kind === "loader" && r.ts_ms >= replayGotoMs)
+    .at(-1);
+  const finalUrl = new URL(page.url());
   // Flush the ws row BEFORE the verdict (round-9 C-006): the /ws/update row
   // is written when the connection CLOSES, so without a close, "failed ws
   // rows: 0" is vacuous — a healthy open connection writes no row at all.
@@ -1066,10 +1072,6 @@ SCENARIOS["exchange-error"] = { run: async ({ context, page, rows, log }) => {
       authPresent(e) &&
       logSec(e) > settleSec,
   );
-  const lastLoader = rows
-    .filter((r) => r.kind === "loader" && r.ts_ms >= replayGotoMs)
-    .at(-1);
-  const finalUrl = new URL(page.url());
   // Document rows for the replayed /?redeem_ready=true navigation: post-fix the
   // settled-failed path converges IN-DOCUMENT (no reload), so there must be exactly
   // ONE (the goto itself); a reload would show a second.
