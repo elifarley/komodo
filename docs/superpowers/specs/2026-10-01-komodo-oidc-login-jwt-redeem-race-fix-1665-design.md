@@ -259,6 +259,18 @@ a `pending` **event**:
   provider reads and the update websocket on normal loads (round-4 critical, fixed here).
   The only closed window is `pending`, bounded by the watchdog. No polling, no storage
   listeners, no `notifyTokenChanged` surface — none has a consumer.
+- **Pre-arm at module scope (addendum — Task 11 m1-seeded evidence)**: mogh_ui arms the redeem
+  inside **Router's render body** (`useAuthState`), but the §7.5 gated reads live in
+  WebsocketProvider — Router's **parent** — and React renders parent-first: the provider's
+  first render commits `enabled = gateOpen(idle→true) && hasJwt(stale-true)` before any
+  child-render flip can exist, and the store change is observed only after commit (~6 ms, two
+  stale-token reads). Module init is guaranteed pre-render (`main.tsx` imports the gate), so
+  the gate initializes `state = "pending"` and arms the watchdog when `location.search` carries
+  `redeem_ready=true` — mirroring mogh_ui's own `jwt_redeem_sent` URL guard. The provider's
+  first render already sees the gate closed; the real `onMutate` flip is then idempotent
+  (equality guard) and its watchdog arm a no-op. Normal loads (no param) stay `idle`,
+  byte-identical; if the real mutation never fires (mogh_ui version drift), the defensive
+  watchdog still converges the window to `settled-failed` within `WATCHDOG_MS`.
 
 ### 7.2 `ui/src/router.tsx`
 
