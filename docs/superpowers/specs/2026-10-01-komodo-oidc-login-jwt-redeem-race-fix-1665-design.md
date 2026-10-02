@@ -157,9 +157,12 @@ Instrumentation & assertions (`compose/oidc-dev/verify.mjs`, headless chromium):
   post-fix: ≥1 authenticated (`authorization`-bearing) app request within 3 s of exchange 200;
   final app state = dashboard rendered (definition above).
 - **Zero-residual assertion**: in the settled-failure scenario, zero unauthenticated-or-401/403
-  app-originated requests **and zero failed websocket handshake attempts** (the ws route is
+  OR auth-bearing-5xx app-originated requests **and zero failed websocket handshake attempts** (the ws route is
   limiter-covered, `api/ws/mod.rs:78`) in the 60 s after settlement-failure (poller control,
-  §7.2+§7.5). **Exclusion list (stated once, referenced by §11)**: auth-surface discovery
+  §7.2+§7.5) — same count unit as the success-row bound above, so an escaped stale read
+  (auth-bearing 500 on this core) is not read as zero. A late exchange failure inside the
+  window SHOULD count: it means something re-triggered the exchange, which the fix forbids.
+  **Exclusion list (stated once, referenced by §11)**: auth-surface discovery
   calls are unauthenticated *by design* and exempt — `GetLoginOptions` (the login page fires
   it on every mount, no `enabled` gate) and external-login starts; equivalently, requests to
   `/auth/login/*` that carry no authorization header. Without this exemption the settled-failed
@@ -471,7 +474,7 @@ pre-login URL instead of a login form with a Back button.
 - [ ] Post-fix: authenticated app-originated follow-ups on the wire within 3 s of exchange
       200; UI lands on dashboard (§6 definition); redeem-window unauthenticated-or-401/403
       bound met on success rows (window total ≤ 4, sliding 15 s max ≤ 4); zero
-      unauthenticated-or-401/403 app requests and zero failed ws handshakes in the 60 s after
+      unauthenticated-or-401/403 OR auth-bearing-5xx app requests and zero failed ws handshakes in the 60 s after
       a settled-failure, **under the §6 exclusion list** (auth-surface discovery calls
       exempt); **update websocket connected within 5 s of dashboard render on success rows**;
       no rate-limiter lockout at defaults.
