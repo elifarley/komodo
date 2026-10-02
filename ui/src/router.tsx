@@ -68,9 +68,10 @@ export const Router = () => {
 
   useEffect(() => {
     if (redeemState !== "settled-failed") return;
-    // NOTE: token hygiene (LOGIN_TOKENS.remove_all) does NOT live here — it
-    // runs in the settlement listener (redeem-gate.ts), synchronously before
-    // this render. This effect is UI convergence only: URL strip + notification.
+    // NOTE: failure paths never mutate the token store (round-8 C-003 — the
+    // earlier remove_all hygiene was removed entirely: a failed redeem must
+    // not wipe a pre-existing valid session). This effect is UI convergence
+    // only: URL strip + notification. redeem-gate.ts owns the full rationale.
     const url = new URL(window.location.href);
     for (const p of ["redeem_ready", "totp", "passkey"])
       url.searchParams.delete(p);

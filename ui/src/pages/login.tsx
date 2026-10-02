@@ -45,10 +45,13 @@ export default function Login(props: {
     // jwt presence, decode-free, via THE parser for the mogh store
     // (redeem-gate.readMoghStore — one parse, shared with the silent-drop
     // check; a second independent parser here is how two copies drift).
-    // The exchanged jwt itself is not available post-reload —
-    // presence plus the fresh flag is the late-success signal; safety rests
-    // on the watchdog path having cleared the store before the late success
-    // re-stored the token. Absent/corrupt store -> false -> no redirect.
+    // The exchanged jwt itself is not available post-reload — presence plus
+    // the fresh flag is the late-success signal. The fresh "ok" flag is only
+    // ever written when the exchange 200'd (cache onSuccess), and a silent
+    // drop overwrites it to "drop" in the same dispatch task — so a fresh ok
+    // flag certifies the exchanged token itself landed, and the redirect
+    // never depended on failure-path store clearing (round-8 C-003 removed
+    // it). Absent/corrupt store -> false -> no redirect.
     if (hasStoredJwt()) {
       // Consume BEFORE navigating: the next document finds no flag, so the
       // redirect cannot loop — including across StrictMode's double effect.

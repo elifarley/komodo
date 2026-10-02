@@ -46,13 +46,23 @@ const isExchange = (
 
 function setState(next: RedeemState) {
   if (state === next) return;
-  if (next === "settled-failed") {
-    // Hygiene runs HERE — synchronously, before the flip can trigger any
-    // React render. Doing this in Router's effect would run after the parent
-    // provider's flip render, whose hasJwt would still read stale-true, and
-    // one stale-token request would escape after settlement.
-    safe(() => MoghAuth.LOGIN_TOKENS.remove_all(), "remove_all");
-  }
+  // The flip is synchronous inside the dispatch callback, before any render
+  // it could trigger: listeners fire and React re-renders with the settled
+  // state in the same task.
+  //
+  // Store hygiene is deliberately failure-NEUTRAL (round-8 C-003). An earlier
+  // revision ran LOGIN_TOKENS.remove_all() here; that emptied the
+  // profile-wide store on EVERY failure path — watchdog on a black-holed
+  // proxy, a replayed ?redeem_ready=true link, a spent one-shot session —
+  // silently logging every tab out of a perfectly valid pre-existing session.
+  // mogh's add_and_change is all-or-nothing (tokens.js: falsy sub
+  // early-returns; there is no partial write), so a failed exchange leaves no
+  // half-state to clean: any token in the store predates the redeem and
+  // belongs to a session this flow must preserve. Reads that resume
+  // post-settlement with that token are the app's ordinary session behavior
+  // (valid -> 200s; expired -> 401 into mogh_ui's own handling) — and neither
+  // is limiter traffic: the per-IP limiter counts /auth/login attempts, not
+  // rejected app reads.
   state = next;
   if (state !== "pending" && watchdog !== undefined) {
     clearTimeout(watchdog);
