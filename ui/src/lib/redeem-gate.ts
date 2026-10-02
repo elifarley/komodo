@@ -89,18 +89,23 @@ function readMoghStore(): MoghTokenStore | undefined {
     () => localStorage.getItem(MOGH_TOKENS_KEY),
     "mogh token store read",
   );
+  // Absence is NOT corruption — it is the m2 canonical silent-drop shape
+  // (mogh simply never wrote the key). Return quietly: logging here would
+  // cry wolf on every real drop, and `raw: null` would be indistinguishable
+  // from literal "null" bytes. undefined (the read itself threw) was already
+  // logged by safe()'s label above — quiet here too.
+  if (raw === null || raw === undefined) return undefined;
   const parsed = safe(
-    () => (raw ? JSON.parse(raw) : undefined),
+    () => JSON.parse(raw),
     `mogh token store parse (raw: ${raw})`,
   );
-  // JSON.parse("null") SUCCEEDS and yields null — and the drift clause below
-  // dereferences store.tokens outside safe(), so a null here would throw in
-  // the cache subscription (skipping the settled-ok flip). Any non-object is
-  // equally not a store: fold both into the corruption path. safe()'s label
-  // never fires on these (they don't throw), so log the raw value HERE.
+  // JSON.parse("null") SUCCEEDS and yields null; any non-object is equally
+  // not a store. These parses don't throw, so safe()'s label never fires —
+  // log the raw value HERE, with the key named so support can inspect
+  // storage without the source.
   if (!parsed || typeof parsed !== "object") {
     console.error(
-      `redeem-gate: mogh token store parse (raw: ${raw}) — JSON null/non-object is not a store; treating as corrupt`,
+      `redeem-gate: mogh token store parse for "${MOGH_TOKENS_KEY}" (raw: ${raw}) — JSON null/non-object is not a store; treating as corrupt`,
     );
     return undefined;
   }
@@ -241,11 +246,18 @@ export function initRedeemGate(client: QueryClient) {
       const jwt = (event.action.data as { jwt?: string } | undefined)?.jwt;
       let phase: RedeemFlag["phase"] = "ok";
       if (jwt) {
+        // Derive the shape FIRST, then use it. Optional chaining
+        // short-circuits only on nullish: `store?.tokens?.some(...)` still
+        // THREW for `{"tokens":"junk"}` (calling undefined) and for
+        // `{"tokens":[null]}` (t.jwt inside the callback) — in the cache
+        // subscription, skipping writeFlag + settled-ok. Array.isArray
+        // derivation cannot throw; everything below works on `tokens`.
         const store = readMoghStore();
-        const jwtAbsent = !store?.tokens?.some((t) => t.jwt === jwt);
+        const tokens = Array.isArray(store?.tokens) ? store.tokens : undefined;
+        const jwtAbsent = !tokens?.some((t) => !!t && t.jwt === jwt);
         // Schema guard — a "drop" verdict needs the absence to be
         // TRUSTWORTHY, and two shapes of doubt say it is not:
-        //  1. the pinned key parsed into bytes that are not the expected
+        //  1. the pinned key parsed but is not the expected
         //     `{ tokens: [...] }` schema (a non-store wrote this key, or the
         //     schema changed under us); or
         //  2. mogh's own closure view holds a jwt while our read of the
@@ -260,11 +272,11 @@ export function initRedeemGate(client: QueryClient) {
         // swallowed the token; nothing was written anywhere), so it must
         // still verdict "drop".
         const driftSuspected =
-          (store !== undefined && !Array.isArray(store.tokens)) ||
+          (store !== undefined && tokens === undefined) ||
           (jwtAbsent && !!safe(() => MoghAuth.LOGIN_TOKENS.jwt(), "jwt read"));
         if (driftSuspected) {
           console.error(
-            "redeem-gate: mogh token store shape unrecognized — silent-drop detection unavailable (upstream key/schema drift suspected)",
+            `redeem-gate: mogh token store shape unrecognized for "${MOGH_TOKENS_KEY}" — silent-drop detection unavailable (upstream key/schema drift suspected)`,
           );
         } else if (jwtAbsent) {
           phase = "drop";

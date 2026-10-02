@@ -285,7 +285,7 @@ assertions SKIPped by design (`reportChecks`).
   exchange's own stale-jwt dispatch row). All runs carry `--post-fix`
   (fix-dependent checks ENFORCED; pre-fix mechanism assertions SKIPped by
   design).
-- **UI under test (batch 1):** the branch fix with pre-arm
+- **UI under test (batch 1, re-verified for batch 2):** the branch fix with pre-arm
   (`49802408e…641f966da`: gate lifecycle incl. the module-scope pre-arm,
   settlement listener, evidence flag, late-success redirect). Core image `localhost/komodo-oidc-dev-core` id `28f89a5be8af`,
   built from HEAD `641f966da`; the running core container was verified to run

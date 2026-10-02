@@ -81,9 +81,8 @@ export function useUser(config?: UserConfig) {
     queryFn: () => komodo_client().getUser(),
     refetchInterval: 30_000,
     ...config,
-    // Composed AFTER the spread (composition rule): a caller's `enabled` composes
-    // with the jwt gate instead of replacing it — `hasJwt` is always ANDed
-    // (never replaceable), and the function-valued form is composed too.
+    // Composed AFTER the spread (composition rule): a caller's `enabled`
+    // must never REPLACE the jwt gate.
     enabled: composeEnabled(hasJwt, callerEnabled),
   });
 
