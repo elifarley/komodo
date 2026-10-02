@@ -8,6 +8,8 @@ on the proxy-less path.
 
 ## Run
 
+Create `compose/oidc-dev/.env` first — it doesn't exist until Step 1 pins the digest.
+
 ```sh
 docker compose -f compose/oidc-dev.compose.yaml --env-file compose/oidc-dev/.env up -d --build
 docker compose -f compose/oidc-dev.compose.yaml ps

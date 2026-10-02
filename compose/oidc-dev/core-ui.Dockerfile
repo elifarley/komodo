@@ -1,5 +1,8 @@
 # Branch UI served by the digest-pinned core image (spec §6.3).
 # Stage 1 mirrors ui/Dockerfile's builder stage; stage 2 is production core.
+# CORE_IMAGE must be a full ref with digest; it is set in
+# compose/oidc-dev/.env (gitignored) — see README step 1. If this ARG is
+# empty, the --env-file was forgotten: `FROM ${CORE_IMAGE}` below fails.
 ARG CORE_IMAGE
 FROM node:22.12-alpine AS builder
 WORKDIR /builder

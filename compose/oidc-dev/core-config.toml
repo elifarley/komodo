@@ -1,4 +1,8 @@
 # Harness core config. Never use these secrets outside compose/oidc-dev.
+# This file is the SINGLE source of truth for the OIDC toggles: komodo env
+# vars override file config (bin/core/src/config.rs:211-213), so they must
+# not also be set as KOMODO_* env in the compose file. oidc_auto_redirect
+# stays pinned false per spec §6 — M3/M6 discrimination.
 host = "https://komodo.oidctest.localhost"
 local_auth = true
 oidc_enabled = false
