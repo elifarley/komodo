@@ -12,7 +12,12 @@ import { MoghAuth } from "komodo_client";
 export type RedeemState = "idle" | "pending" | "settled-ok" | "settled-failed";
 
 const REDEEM_KEY = "ExchangeForJwt";
+// Browser fetch has no default timeout — without this bound a black-holing
+// proxy would leave the gate "pending" forever.
 const WATCHDOG_MS = 12_000;
+// "Just over the watchdog": §7.7's redirect accepts only a fresh flag, and the
+// settlement-time rewrite restarts the TTL (§7.3), so freshness measures from
+// the last confirmed settlement, not the original arm.
 const FLAG_TTL_MS = 15_000;
 const FLAG_KEY = "komodo-redeem";
 const TOKENS_KEY = "mogh-auth-tokens-v1"; // mogh_auth_client 1.7.1 tokens.js:5
@@ -20,6 +25,15 @@ const TOKENS_KEY = "mogh-auth-tokens-v1"; // mogh_auth_client 1.7.1 tokens.js:5
 let state: RedeemState = "idle";
 let watchdog: ReturnType<typeof setTimeout> | undefined;
 const listeners = new Set<() => void>();
+
+// One stable subscribe for both hooks: hoisted to module scope so re-renders
+// reuse it instead of re-creating an identical closure on every call.
+const subscribe = (cb: () => void) => {
+  listeners.add(cb);
+  return () => {
+    listeners.delete(cb);
+  };
+};
 
 // mutationKey is `readonly unknown[]` (query-core MutationKey) — readonly is
 // load-bearing: a mutable `unknown[]` here fails structural assignability.
@@ -68,7 +82,16 @@ const sessionStorageOk =
 type RedeemFlag = { t: number; phase: "ok" | "drop" };
 
 function writeFlag(phase: RedeemFlag["phase"]) {
-  if (!sessionStorageOk) return;
+  if (!sessionStorageOk) {
+    // Degraded mode (§7.3 + §8's M2 row): this module IS the drop detector, so
+    // the drop verdict must still surface — console-only signal, then skip.
+    if (phase === "drop") {
+      console.error(
+        "redeem-gate: exchange 200'd but jwt not stored (M2); sessionStorage unavailable — console-only signal",
+      );
+    }
+    return;
+  }
   safe(
     () => window.sessionStorage.setItem(FLAG_KEY, JSON.stringify({ t: Date.now(), phase })),
     "flag write",
@@ -95,10 +118,7 @@ export function flagFresh(flag: RedeemFlag | undefined): boolean {
 /** True unless a redeem mutation is in flight. The one gate predicate. */
 export function useRedeemGateOpen(): boolean {
   return useSyncExternalStore(
-    (cb) => {
-      listeners.add(cb);
-      return () => listeners.delete(cb);
-    },
+    subscribe,
     () => state !== "pending",
     () => true,
   );
@@ -106,10 +126,7 @@ export function useRedeemGateOpen(): boolean {
 
 export function useRedeemState(): RedeemState {
   return useSyncExternalStore(
-    (cb) => {
-      listeners.add(cb);
-      return () => listeners.delete(cb);
-    },
+    subscribe,
     () => state,
     () => "idle" as RedeemState,
   );
@@ -144,22 +161,29 @@ export function createRedeemGateHooks(): MutationCacheConfig {
 export function initRedeemGate(client: QueryClient) {
   client.getMutationCache().subscribe((event) => {
     if (event.type !== "updated" || !isExchange(event.mutation)) return;
-    const action = (event.action as { type?: string } | undefined)?.type;
-    if (action === "success") {
+    // action is a REQUIRED discriminated union (ContinueAction | ErrorAction |
+    // … | SuccessAction) — narrow it; the previous `{ type?: string } |
+    // undefined` cast claimed action could be absent, which the .d.ts rules out.
+    if (event.action.type === "success") {
       // Fires AFTER mogh_ui's onSuccess. M2 check: did storage gain the jwt?
-      const jwt = (event.mutation.state.data as { jwt?: string } | undefined)?.jwt;
+      // action.data is the exact success-dispatch payload (identical to
+      // mutation.state.data per mutation.cjs's success reducer).
+      const jwt = (event.action.data as { jwt?: string } | undefined)?.jwt;
       let stored = false;
       if (jwt) {
+        // §7.3: on parse failure log the RAW stored value, not just the
+        // SyntaxError. safe()'s label interpolates it, and a label only prints
+        // on failure — the happy path builds a short string it never logs.
+        const raw = safe(() => localStorage.getItem(TOKENS_KEY), "M2 storage read");
         stored =
           safe(() => {
-            const raw = localStorage.getItem(TOKENS_KEY);
             const parsed = raw ? (JSON.parse(raw) as { tokens?: Array<{ jwt: string }> }) : undefined;
             return parsed?.tokens?.some((t) => t.jwt === jwt) === true;
-          }, "M2 storage read") === true;
+          }, `M2 parse (raw: ${raw})`) === true;
       }
       writeFlag(jwt && !stored ? "drop" : "ok"); // refresh t: late-success TTL runs from here
       setState("settled-ok");
-    } else if (action === "error") {
+    } else if (event.action.type === "error") {
       setState("settled-failed");
     }
   });
