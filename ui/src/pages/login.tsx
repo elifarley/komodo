@@ -17,13 +17,22 @@ import {
 // "/" exactly, or "/" followed by a character that is neither "/"
 // (protocol-relative //host) nor "\" (WHATWG URL parsing folds "\" to "/" for
 // special schemes, so /\evil.example is protocol-relative too; the parser is
-// the spec, not a browser quirk). Anything else — absolute URLs,
-// control-character prefixes, empty — falls back to "/". Query strings on an
-// accepted path are fine: they stay on this origin.
+// the spec, not a browser quirk), and NO control character anywhere — the
+// parser strips tabs/newlines BEFORE parsing, so "/\t/evil.example" would
+// weld into "//evil.example" (protocol-relative) only AFTER this guard has
+// approved it; control chars never belong in a local path. Anything else —
+// absolute URLs, empty, null — falls back to "/". Query strings on an
+// accepted path are fine: they stay on this origin, and a percent-encoded
+// "%2F%2F" stays a literal on-origin path segment (URLSearchParams already
+// decoded the one layer that mattered).
 function safeLocalPath(raw: string | null): string {
   // typeof guard FIRST: `raw === "/"` being false does not exclude null, so
   // without it null flows into the regex call (tsc caught exactly that).
-  return typeof raw === "string" && (raw === "/" || /^\/[^/\\]/.test(raw))
+  return (
+    typeof raw === "string" &&
+    !/[\x00-\x1f\x7f]/.test(raw) &&
+    (raw === "/" || /^\/[^/\\]/.test(raw))
+  )
     ? raw
     : "/";
 }
