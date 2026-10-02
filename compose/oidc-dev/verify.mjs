@@ -698,8 +698,19 @@ SCENARIOS["m1-seeded"] = { delayMs: 1500, run: async ({ rows, log }) => {
   );
   // Value-level corroboration (browser fetch shim — the log cannot show WHICH
   // token): a FETCH row carrying the stale jwt tail before the exchange row.
+  // Scoped to the SAME paths the wire arm scopes (^/(user|read)): the redeem
+  // request itself (/auth/login/ExchangeForJwt) legitimately carries the stale
+  // jwt — it IS the credential being exchanged — and the shim logs that row at
+  // DISPATCH, necessarily before the wire `ex` completion ts. Unscoped, the
+  // exchange self-matches and false-fails the post-fix absence arm once the
+  // real leaks are closed (pre-arm run: wire observed 0; sole stale-tail row
+  // was the exchange dispatch at ex-1531 ms).
   const staleFetch = rows.find(
-    (r) => r.kind === "fetch" && r.auth_tail === STALE_TAIL && r.ts_ms <= logMs(ex),
+    (r) =>
+      r.kind === "fetch" &&
+      /^\/(user|read)(\/|$)/.test(r.path ?? "") &&
+      r.auth_tail === STALE_TAIL &&
+      r.ts_ms <= logMs(ex),
   );
   await sleep(8_000); // let the post-exchange reload + dashboard settle
   // Instrumentation liveness: an ABSENCE check (the post-fix arms) is only

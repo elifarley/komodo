@@ -71,6 +71,28 @@ function safe<T>(fn: () => T, label: string): T | undefined {
   }
 }
 
+// PRE-ARM (spec §7.1 addendum): mogh_ui fires the redeem during ROUTER's
+// render — a CHILD of WebsocketProvider, whose gated reads commit
+// enabled=true before any child-render flip can exist (React renders
+// parent-first). Initializing pending at module scope closes that gap:
+// the provider's FIRST render already sees the gate closed. The watchdog
+// arms here too, so the window stays bounded even if the real mutation
+// never fires (defensive: mogh_ui version drift). Runs at import —
+// main.tsx's import guarantees this is before any React render — and the
+// later real onMutate flip is idempotent (equality guard; its watchdog
+// arm is a no-op because watchdog is already set). Normal loads (no
+// redeem_ready param) stay idle, byte-identical to pre-fix behavior.
+if (
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("redeem_ready") === "true"
+) {
+  state = "pending";
+  watchdog = setTimeout(() => {
+    watchdog = undefined;
+    setState("settled-failed");
+  }, WATCHDOG_MS);
+}
+
 const sessionStorageOk =
   typeof window !== "undefined" &&
   safe(() => {
