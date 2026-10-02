@@ -6,6 +6,7 @@ import {
   type WriteResponses,
 } from "komodo_client";
 import {
+  QueryBooleanOption,
   UseMutationOptions,
   UseQueryOptions,
   keepPreviousData,
@@ -47,15 +48,30 @@ export function komodo_client() {
 
 // ============== RESOLVER ==============
 
-export function useUser() {
+// The exact `enabled` shape RQ infers for the GetUser query (TQueryKey is
+// invariant through options.queryFn — the default `QueryKey` widening fails
+// assignability), so tsc validates the composed callback's parameter type.
+type UserConfig = {
+  enabled?: QueryBooleanOption<Types.User, Error, Types.User, string[]>;
+};
+
+export function useUser(config?: UserConfig) {
   const userReset = useUserReset();
   const hasJwt = !!MoghAuth.LOGIN_TOKENS.jwt();
+  const callerEnabled = config?.enabled;
 
   const query = useQuery({
     queryKey: ["GetUser"],
     queryFn: () => komodo_client().getUser(),
     refetchInterval: 30_000,
-    enabled: hasJwt,
+    ...config,
+    // Composed AFTER the spread (§7.6 rule): a caller's `enabled` composes
+    // with the jwt gate instead of replacing it — `hasJwt` is always ANDed
+    // (never replaceable), and the function-valued form is composed too.
+    enabled:
+      typeof callerEnabled === "function"
+        ? (q) => hasJwt && callerEnabled(q) !== false
+        : (callerEnabled ?? true) && hasJwt,
   });
 
   useEffect(() => {
@@ -96,11 +112,20 @@ export function useRead<
   >,
 >(type: T, params: P, config?: C) {
   const hasJwt = !!MoghAuth.LOGIN_TOKENS.jwt();
+  const callerEnabled = config?.enabled;
   return useQuery({
     queryKey: [type, params],
     queryFn: () => komodo_client().read<T, R>(type, params),
-    enabled: hasJwt && config?.enabled !== false,
     ...config,
+    // Composed AFTER the spread (§7.6 rule): an explicit caller `enabled`
+    // (including explicitly `undefined` — object spread copies the key over,
+    // and RQ resolves `undefined` as enabled) used to replace the jwt gate
+    // wholesale; the function-valued form is composed, not dropped by the
+    // old `!== false` check.
+    enabled:
+      typeof callerEnabled === "function"
+        ? (q) => hasJwt && callerEnabled(q) !== false
+        : hasJwt && callerEnabled !== false,
   });
 }
 
