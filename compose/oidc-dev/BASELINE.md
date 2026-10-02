@@ -302,10 +302,12 @@ assertions SKIPped by design (`reportChecks`).
 ## Verdicts (pre-fix → post-fix)
 
 Every post-fix row below ran on the FINAL build. Batch 1 covered four rows;
-batch 2 (canonical) re-ran the remaining three (`latency`, `m2-forced`,
+batch 2 re-ran the remaining three (`latency`, `m2-forced`,
 `exchange-error`) after the transfer argument that had let them stand on batch 0
 was refuted — see "The retired † argument" below. Batch 0's copies of those
-rows are historical only.
+rows are historical only. **Round-8 batch 3 re-ran ALL SEVEN at the PR head
+(canonical; see the round-8 batch section below) after F-001 showed batch 2
+predated three detector commits.**
 
 | Scenario | Pre-fix | Post-fix (final build) | Fix-dependent arms (`--post-fix`) |
 |---|---|---|---|
@@ -318,6 +320,8 @@ rows are historical only.
 | `isolation` | PASS 3/3 | **PASS 3/3** (batch 1) | n/a — the gate's filtered subscription introduced no gate flip (regression guard holds) |
 
 **7/7 green — the "full suite green post-fix" acceptance criterion is met.**
+Re-certified at the PR head by round-8 batch 3 (`a861602a4`): same verdict,
+SHA-bound this time.
 
 ### The retired † argument — what was wrong, and what replaced it
 
@@ -358,6 +362,74 @@ The two-part transfer argument, stated correctly — and mooted by batch 2:
 Since part 1 was a live defect inside a † row's own scenario, no transfer was
 sound; the rows were re-run (batch 2), and batch 0's three rows are kept as
 history only.
+
+## Round-8 batch — 7/7 re-certified at the PR head (and what the first attempt caught)
+
+Round-8 review (F-001) held that batch 2 — this document's canonical 7/7 —
+certified `641f966da` while three later commits (`e9efeac04`, `ccc94c0cc`,
+`308eddd6d`) reworked the exact silent-drop detector the m2 row validates,
+and nothing forced the next run to bind to the tree it exercised. Two changes
+close that permanently:
+
+- **SHA-bound evidence (verify.mjs):** every run stamps `git rev-parse HEAD`
+  into its scenario banner and every ndjson meta row (all batch-3 rows carry
+  `head=a861602a4279, dirty=0, postFix=true`), and the runner REFUSES to
+  execute with uncommitted changes under `ui/src` or `compose/oidc-dev` —
+  the gate refused one launch during this very round (the doc edits for this
+  section were uncommitted) and died at module top before touching the
+  stack, which is the designed behavior. Dev escape:
+  `VERIFY_ALLOW_DIRTY=1` proceeds but stamps the dirt count — evidence can
+  be recorded dirty, never mis-recorded clean.
+- **Run protocol:** commit → build → run → record. The stamped SHA is the
+  join key between a PASS line and the code that earned it.
+
+### Batch 3a (`e6192cf37`, image `8835351d67ac`, ~16:50 -03:00) — 6/7, and the failure was real
+
+This was the first post-fix execution of the drift-guard detector at all
+(batches 0–2 never ran it — that is F-001's point), and it FAILED
+m2-forced's fix-dependent surfacing arm: `no komodo-redeem flag and no
+notification text`. The ndjson root-causes a consume race BETWEEN documents,
+not a detector defect: the settlement writes the drop flag in the same
+dispatch task as the exchange 200 (exchange at `…726.843`); the OLD document
+— session-less, settled — bounces RequireAuth to `/login` and mounts Login
+(login chunk fetched at `…726.857`); mogh's sanitize reload lands at
+`…726.892`; and the doomed document's clear-on-read consumed the flag
+milliseconds before the unload. Batch 2 had passed only because the unload
+happened to win that passive-effect race. Fix: `dfa654392` — the drop branch
+no longer consumes (TTL expiry is the cleanup; freshness gates the toast;
+the ok branch keeps consume-before-navigate, because THAT redirect loops).
+
+### Batch 3b (canonical — HEAD `a861602a4`, image `778aee5742c6`, 17:08–17:14 -03:00)
+
+```
+PASS stale-token requests during the redeem window — expect ZERO (fix defers provider reads) (wire: auth+rejected in [drive start -> exchange 200]; observed 0, statuses -)
+PASS stale token VALUE on those paths — expect ABSENT (fetch shim tail …hwIjoxfQ.stale-signature)
+PASS post-fix: drop flag surfaced in-document on the login page
+PASS post-fix: in-document convergence, session preserved (final /; document loads for the replay: 1)
+PASS zero-residual 60s window (unauth-or-401/403-or-auth-5xx app rows: 0; failed ws handshakes: 0)
+PASS post-fix: leg-1 session preserved through the failed settlement (authenticated /user 200 after ts=1790971835.641; observed 5)
+```
+
+`SCENARIO … PASS` ×7 (`success` 7/7, `latency` 8/8 with round-trip 2029 ms,
+`m1-seeded` 4/4, `m2-forced` 5/5, `exchange-error` 3/3 + 2 pre-fix SKIPs,
+`hung` 5/5 + 1 pre-fix SKIP, `isolation` 3/3), `ALL SCENARIOS PASS`, exit 0.
+Round-8 contract rows worth calling out:
+
+- **exchange-error session preservation (C-003):** the replayed 401 settles
+  store-neutral; the observation window held 0 unauth/401/403/5xx rows, 0
+  failed ws handshakes, and **5 authenticated `/user` 200s** — the leg-1
+  session survives and the app renders at `/`. The preservation arm is
+  fail-closed against reintroducing the wipe: an emptied store can produce
+  no authenticated request at all.
+- **m2-forced surfacing (the batch-3a lesson):** the drop flag is present in
+  the surviving document and the toast renders — race-free by construction
+  now, because nothing consumes the flag before the TTL.
+- **m1 check names (F-003):** names state the mode-true expectation
+  ("expect ZERO (fix defers provider reads)" under `--post-fix`), so pasted
+  stdout no longer asserts its own inverse.
+
+**7/7 green — now certifying the code being merged, not two commits of
+history.**
 
 ## m2-forced — the silent drop now surfaces (M2 closed at the komodo layer)
 
@@ -740,13 +812,18 @@ express this):**
 02:14–02:25 -03:00 (HEAD `9d9a38a88`, image `5190032c1dbe`, verify.mjs as
 committed at `fa53da3c0`); batch 1 (final) 02:51–02:55 -03:00 (HEAD
 `641f966da`, image `28f89a5be8af`, verify.mjs with `641f966da`'s one-predicate
-m1 scoping fix); batch 2 (final, canonical) 08:58–09:04 -03:00 (same HEAD
+m1 scoping fix); batch 2 08:58–09:04 -03:00 (same HEAD
 `641f966da`, same image `28f89a5be8af` — id re-verified on the running
 container before the batch; the re-run rows are `latency` 08:58, `m2-forced`
-09:00, `exchange-error` 09:01, each ≥16 s apart). Harness per README "Run"
+09:00, `exchange-error` 09:01, each ≥16 s apart); round-8 batches 3a/3b —
+3a ~16:50 -03:00 (HEAD `e6192cf37`, image `8835351d67ac`, 6/7 — m2-forced
+FAIL, root-caused to the doomed-document consume race, fixed in
+`dfa654392`), **3b canonical 17:08–17:14 -03:00 (HEAD `a861602a4`, image
+`778aee5742c6`, 7/7, every ndjson meta row stamped
+`head=a861602a4279, dirty=0`)**. Harness per README "Run"
 (podman shim, `compose/oidc-dev.compose.yaml`, `oidc-provider@9.12.2`); raw
-ndjson evidence in gitignored `compose/oidc-dev/out/` (batch 2 files are the
-surviving evidence for its three rows, batch 1 for its four); run stdout
-archived by the task outside the repo. All commit hashes are pre-rewrite; full
-history on the fork's `komodo-oidc-login-jwt-redeem-race-fix-1665-archive`
-branch.*
+ndjson evidence in gitignored `compose/oidc-dev/out/` (batch 3b files are
+the surviving evidence for all seven rows); run stdout
+archived by the task outside the repo. All batch 0–2 commit hashes are
+pre-rewrite; full history on the fork's
+`komodo-oidc-login-jwt-redeem-race-fix-1665-archive` branch.*
