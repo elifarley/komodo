@@ -418,6 +418,11 @@ Notes:
 
 ### PRE-FIX BASELINE SUMMARY (stock v2.3.3 UI, observed 2026-10-02)
 
+> **Superseded numbers — `BASELINE.md` is canonical.** This summary carries
+> Task-4-era values (e.g. latency 2029 ms); Task 5's fresh batch re-measured
+> them (BASELINE.md header) and Task 11 appended the post-fix half. Read
+> `BASELINE.md` for both.
+
 Feeds Task 5's `BASELINE.md`:
 
 - **`success`** — green (environment row): exchange 200, authed follow-ups, ws
