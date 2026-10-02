@@ -301,6 +301,140 @@ Only `/auth/login/*` is routed through the sidecar (everything else proxies
 straight to core — measured 4ms with a 1500ms knob active). Keep the value
 under the fix's §7.1 watchdog (12 s); the dedicated past-watchdog harness row
 uses 15000. Verified: 0.019 s baseline vs 1.53 s with `DELAY_AUTH_MS=1500`.
+The scenarios manage this knob themselves (read via `printenv` inside the
+delay container, recreated when it differs, restored to 0 afterwards) — run
+the suite, not the knob.
+
+## Verify suite (Task 4) — `verify.mjs`
+
+One script drives the scenario matrix (spec §6) over the Caddy JSON access log
+plus browser instrumentation, prints per-assertion PASS/FAIL lines, then
+`SCENARIO <name> PASS|FAIL` and exits with the matching code.
+
+```sh
+# one-time, dev-only HOST install (not committed; see .gitignore):
+cd compose/oidc-dev && npm init -y && npm i playwright && npx playwright install chromium
+
+node compose/oidc-dev/verify.mjs success          # exit 0 = PASS
+node compose/oidc-dev/verify.mjs latency          # sets DELAY_AUTH_MS=2000 itself, restores 0
+node compose/oidc-dev/verify.mjs m1-seeded        # sets DELAY_AUTH_MS=1500 (widens the M1 window), restores 0
+node compose/oidc-dev/verify.mjs m2-forced
+node compose/oidc-dev/verify.mjs exchange-error   # ~90 s: 60 s residual window is OBSERVED, not assumed
+node compose/oidc-dev/verify.mjs hung             # sets DELAY_AUTH_MS=15000, ~2.5 min
+node compose/oidc-dev/verify.mjs isolation
+node compose/oidc-dev/verify.mjs all              # sequential, 16 s gap between rows (per-IP auth limiter: 5/15 s)
+
+# Task 11 (post-fix) only — also enforces the FIX-DEPENDENT assertions:
+node compose/oidc-dev/verify.mjs <scenario> --post-fix
+```
+
+Notes:
+
+- Requires the stack up (Run section). The harness host serves everything on
+  `:8443`; the drive is two-phase (the whole komodo vhost is gated, so the
+  first `/auth/oidc/login` entry 302s to the portal's throwaway authorize, and
+  the SECOND entry auto-resumes — same shape as the curl recipe above).
+- **Cookie-domain probe (the README's "Cookie caveat", settled
+  2026-10-02): headless Chromium ACCEPTS the mock's parent-domain
+  `Domain=oidctest.localhost` `_session` cookie — the full login completes and
+  the cookie reaches the komodo origin. The `*.oidctest.test` + /etc/hosts
+  fallback is NOT needed.**
+- Every scenario writes `out/<scenario>.ndjson` (gitignored): request rows
+  (`kind:"req"` — url, auth-present, status, ts, duration_s) and console-shim
+  rows (`kind:"tokens"|"loader"|"fetch"|"ws-login"`), plus one `meta` row.
+- Checks FAIL CLOSED: a check that cannot find its evidence throws (printed as
+  an error line, verdict FAIL). FIX-DEPENDENT checks are `SKIP`ped (never
+  PASSed) unless `--post-fix` is given — pre-fix runs must PASS on the
+  mechanism-reproduction assertions alone.
+
+### Access-log field notes (what the assertions actually rely on)
+
+| Field | Reality (Caddy 2.11, this stack) |
+|---|---|
+| `ts` | **EPOCH-SECONDS float** — never `Date.parse` it; all window math stays in log-unit seconds (`logSec(e)`), cross-source comparisons multiply by 1000 onto the `Date.now()` timeline (same host clock). |
+| `status` | Top-level **integer** per row (`resp_headers.Status` not used). The ws upgrade row carries an explicit `101`. |
+| `duration` | Seconds, request start → response written. The exchange round-trip assertion (`latency`/`hung`) reads this — `duration × 1000 ≥ DELAY_AUTH_MS`. |
+| `request.headers` | Nested map of arrays. **Caddy 2.11 redacts the VALUES of `Authorization` AND `Cookie` (`"[REDACTED]"`)** — presence is visible, values are not. This deviates from the earlier task note that authorization values are visible; value-level evidence (WHICH token was attached — the M1 discriminator) therefore comes from the browser-side `fetch` shim (`kind:"fetch"` rows carry the auth-header tail-24 fingerprint), while the wire rows prove presence + status + timing. |
+| `resp_headers` | Header map DIRECTLY (no nested `.headers` key — unlike `request.headers`). `Location` is visible (not redacted). |
+| ws rows | The `/ws/update` row is written when the connection **CLOSES**, not at the handshake — its `ts` must never anchor a time window (the success scenario closes the browser context to flush the row before checking). |
+| hosts | Row hosts carry `:8443` (`komodo.oidctest.localhost:8443`). |
+
+### Deviations from the plan's Task-4 sketch (reality won)
+
+1. **The `m1-seeded` scenario manages the knob (`DELAY_AUTH_MS=1500`).** The
+   sketch seeded the stale token and hoped the requests landed inside the
+   ~100ms pre-fix window; §6 itself says the knob exists to "widen the race
+   deterministically instead of relying on lucky timing". With 1500ms the
+   stale-token `/user` + `/read/GetCoreInfo` requests reproducibly fire during
+   pending. Restored to 0 after the row.
+2. **Core answers a bad-signature jwt with `500`, not `401`** (observed on
+   `GET /user` and `POST /read/GetCoreInfo`, 2026-10-02). Spec §6's "the server
+   401s it" assumption is wrong; the M1 discriminating signal is the
+   stale-token-authenticated request inside the window (plus the fetch-shim
+   value proof), so the wire check accepts 401/403/5xx and prints the observed
+   statuses.
+3. **The seed is once-per-context, not per-document.** `addInitScript` runs on
+   EVERY document; an unguarded seed re-poisoned the store after the
+   post-exchange reload, so the dashboard's own reads came back stale-token.
+   The seed now skips when a store already exists.
+4. **`hung` pre-fix is NOT an eternal spinner at `DELAY_AUTH_MS=15000`** — the
+   plan's §8 row-4 pre-fix cell assumed it. Reality: mogh_ui has no timeout, so
+   the LoadingScreen holds for the full 15 s (asserted: loader-on continuously
+   from landing to the late 200), then the late 200 stores the token and the
+   sanitize reload lands the dashboard — a **slow success**. The eternal
+   spinner only exists for an exchange that NEVER settles, which a finite delay
+   sidecar cannot produce; that arm belongs to the post-fix watchdog
+   (`--post-fix` asserts the gate dropped BEFORE the late 200 and §7.7's
+   landing). Pre-fix the row asserts what stock behavior actually guarantees.
+5. **The success rows close the browser context before checking the ws row**
+   (field note above — the 101 row lands at connection close). The
+   browser-side `on_login` console line is the second, independent signal.
+6. **`isolation` passes PRE-FIX** — stock v2.3.3 already contains a failing
+   non-redeem execute (`POST /execute/StartDeployment` → 500) without a gate
+   flip or reload. The scenario stays as the regression guard for §7.1's
+   filtered subscription (an unfiltered MutationCache listener would flip the
+   gate here).
+7. **`exchange-error`'s residual window excludes the settlement row itself**
+   (strict `> settlement`): the replayed exchange carries the still-stored jwt,
+   so counting the settlement 401 would fail the post-fix run on the correct
+   implementation's own row. Pre-fix the residual count is printed as an
+   observation and only ENFORCED under `--post-fix`.
+8. The sketch's `check("... ", () => true)` stubs are gone: every check reads
+   captured evidence (a check whose evidence is missing throws → FAIL).
+
+### Spec §8 row → scenario map
+
+| §8 row | Scenario | Pre-fix assertion (mechanism) | Post-fix assertion (`--post-fix`) |
+|---|---|---|---|
+| Exchange 200, token stored | `success`, `latency` | exchange 200; authed follow-up ≤3 s; ws 101 + on_login; dashboard rendered; window total ≤4 & sliding ≤4 (+ round-trip ≥ delay in `latency`) | unchanged — these are the regression guard (green pre-fix) |
+| Exchange 200, token dropped (M2) | `m2-forced` | upstream 200 but sub-less jwt never stored; reload lands `/login` | drop flag surfaced in-document on the login page (`komodo-redeem` phase `drop` / notification text) |
+| Exchange error (429 / consumed) | `exchange-error` | replayed exchange 401; no navigation for 8 s; LoadingScreen still up (eternal spinner, M5) | in-document convergence to `/login` (exactly 1 document load) + zero-residual 60 s window |
+| Hung exchange | `hung` | round-trip ≥ 15000 ms; LoadingScreen continuously up until the late 200; slow-success reload documented | watchdog dropped the gate pre-settlement (loader-off before the 200); final landing `/` via §7.7 |
+| No token, direct `/` | covered by the drive shape | every scenario's pre-session gate bounce (302 → portal) is asserted implicitly by the drive reaching the interaction page | unchanged |
+| Stale token during redeem (M1) | `m1-seeded` | stale-token authed requests fire inside `[drive start → exchange 200]` (wire: auth+rejected; value: fetch-shim tail) | zero such rows (§7.5 read deferral); fresh `current` pointer observed |
+| Latched errors after settlement | (no dedicated row) | post-reload remount clears latched state implicitly — `success`'s dashboard + ws + authed reads assert the recovered state | unchanged |
+| Non-redeem mutation unaffected | `isolation` | failing execute (500) → no reload, no LoadingScreen flip within 2 s (passes pre-fix — deviation 6) | unchanged — guards §7.1's subscription filter |
+
+### PRE-FIX BASELINE SUMMARY (stock v2.3.3 UI, observed 2026-10-02)
+
+Feeds Task 5's `BASELINE.md`:
+
+- **`success`** — green (environment row): exchange 200, authed follow-ups, ws
+  101 + on_login, dashboard; window bound 0 rows.
+- **`latency`** — green; observed round-trip 2029 ms ≥ 2000 ms.
+- **`m1-seeded`** — **M1 REPRODUCED**: `/user` + `/read/GetCoreInfo` fired with
+  the seeded stale token during the pending window (fetch-shim value proof;
+  core rejected with 500); fresh token stored after the exchange.
+- **`m2-forced`** — **M2 REPRODUCED**: upstream 200 with a sub-less jwt →
+  `add_and_change` silently drops it (no TOKENS transition), reload lands on
+  `/login` with no signal.
+- **`exchange-error`** — **M5 REPRODUCED**: replayed `/?redeem_ready=true` →
+  exchange 401 → no navigation (URL keeps `redeem_ready=true`) and the
+  LoadingScreen never clears (eternal spinner).
+- **`hung`** — spinner holds the full 15013 ms, then the late 200 converges
+  (slow success). Pre-fix has no watchdog; the "eternal" arm is only reachable
+  with a never-settling exchange.
+- **`isolation`** — green pre-fix (gate already isolated; regression guard).
 
 ## Layout
 
@@ -312,6 +446,9 @@ uses 15000. Verified: 0.019 s baseline vs 1.53 s with `DELAY_AUTH_MS=1500`.
 | `Caddyfile` | TLS front: portal vhost (plain proxy) + komodo vhost (forward_auth gate → delay/core split, JSON access log incl. request headers) |
 | `delay.mjs` | The latency knob's sidecar (real awaited `setTimeout`, plain HTTP pipe) |
 | `oidc-mock/` | The OIDC provider (`oidc-provider@9.12.2`, in-memory adapter, dev interactions) + `/verify` forward-auth endpoint + `/dev` landing on :3344 |
+| `verify.mjs` | Playwright scenario suite (spec §6): drives the login, tails the access log, prints per-assertion PASS/FAIL + `SCENARIO <name> PASS|FAIL`; writes `out/<scenario>.ndjson`. See "Verify suite" above |
+| `out/` | LOCAL ONLY, gitignored — per-scenario ndjson evidence |
+| `node_modules/`, `package.json`, `package-lock.json` | LOCAL ONLY, gitignored — the dev-only host playwright install |
 | `access.log` | LOCAL ONLY, gitignored — Caddy's JSON access log; `touch` before first `up` |
 | `caddy-root-ca.crt` | LOCAL ONLY, gitignored — exported from the caddy volume; re-export after volume recreation |
 | `.env` | LOCAL ONLY, gitignored — `KOMODO_CORE_IMAGE` digest pin |
