@@ -100,24 +100,29 @@ throw), `accountId` undefined → **401**; adapter/lookup failure → catch →
 
 ## Driving a login with curl (what the Playwright suite will automate)
 
-Works because `oidc-mock` publishes 3344 to the host. `--resolve` points the
-portal hostname at the published port; the **Cookie header must be copied by
-hand** — curl's cookie jar refuses `Domain=oidctest.localhost` (same
-public-suffix edge as the browser caveat below), but a manual `-H "Cookie: …"`
-bypasses the jar entirely:
+Works because `oidc-mock` publishes 3344 on loopback. `--resolve` points the
+portal hostname at the published port. A cookie jar carries the flow's
+**host-only** cookies (`_interaction*` have no Domain attribute, so the jar
+accepts them; steps 1–3 must share one jar or the login POST dies with
+SessionNotFound). The **`_session` cookie is the one exception** — its
+`Domain=oidctest.localhost` attribute is refused by curl's jar (the same
+public-suffix edge as the browser caveat below), so it must be copied from
+step 3's `Set-Cookie` header into a manual `-H "Cookie: …"`:
 
 ```sh
 # 1. auth request → 303 /interaction/:uid
-LOC=$(curl -s -o /dev/null -D - --resolve portal.oidctest.localhost:3344:127.0.0.1 \
+LOC=$(curl -s -o /dev/null -D - -c jar -b jar --resolve portal.oidctest.localhost:3344:127.0.0.1 \
   'http://portal.oidctest.localhost:3344/auth?client_id=komodo-harness&response_type=code&scope=openid%20email%20profile&redirect_uri=https%3A%2F%2Fkomodo.oidctest.localhost%2Fauth%2Foidc%2Fcallback&code_challenge=<CHALLENGE>&code_challenge_method=S256&state=s&nonce=n' \
   | grep -i '^location' | sed 's/^[Ll]ocation: //; s/\r//')
 # 2. dev-interaction login POST (any credentials; findAccount echoes the login)
-RESUME=$(curl -s -o /dev/null -D - -d 'prompt=login&login=alice&password=x' \
+RESUME=$(curl -s -o /dev/null -D - -c jar -b jar -d 'prompt=login&login=alice&password=x' \
   "http://portal.oidctest.localhost:3344$LOC" | grep -i '^location' | sed 's/^[Ll]ocation: //; s/\r//')
-# 3. resume → 303 redirect_uri with code; grab _session from the Set-Cookie line
+# 3. resume → 303 redirect_uri with code; _session is set on THIS response
 #    (consent is auto-skipped by loadExistingGrant — one POST total)
+curl -s -D headers.txt -o /dev/null -c jar -b jar "$RESUME"
+CK=$(grep -i 'set-cookie: _session=' headers.txt | sed 's/^[Ss]et-[Cc]ookie: //; s/;.*//')
 # 4. forward_auth check
-curl -H "Cookie: _session=<value>" http://127.0.0.1:3344/verify   # → 200 ok
+curl -H "Cookie: $CK" http://127.0.0.1:3344/verify   # → 200 ok
 ```
 
 Also verified end-to-end 2026-10-01: code → `POST /token`
