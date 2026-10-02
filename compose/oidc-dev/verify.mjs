@@ -676,12 +676,18 @@ function successChecks(log, { rows, finalUrl }) {
 
 // Flush the ws 101 row: Caddy writes the upgrade row only when the connection
 // CLOSES, so the scenario closes the browser context and waits for the row.
+// Returns true when the 101 row was observed (the CALLER's check must assert
+// on this result, not re-query `log`: the row's `ts` is the UPGRADE time, not
+// the close time — the preserved-session ws in exchange-error upgrades during
+// pending, ~44 ms before the 401 — so any "after settlement" timestamp
+// predicate on it is wrong; see the round-9 batch-4 lesson below).
 async function flushWsRow(context) {
   await context.close();
   try {
     await waitForLog((e) => reqUri(e) === "/ws/update" && statusOf(e) === 101, 10_000, "/ws/update 101 row");
+    return true;
   } catch {
-    // surfaced as a FAIL by the ws check — no silent pass
+    return false; // surfaced as a FAIL by the caller's ws check — no silent pass
   }
 }
 
@@ -1059,7 +1065,10 @@ SCENARIOS["exchange-error"] = { run: async ({ context, page, rows, log }) => {
   // (asserted positively below); a genuinely FAILED upgrade writes its
   // non-101 row at failure time, inside the window, where residualRows
   // counts it.
-  await flushWsRow(context);
+  // The result — not a re-query of `log` — is the assertion: the flushed
+  // row's ts is its UPGRADE time (during pending, ~44 ms before the 401),
+  // so any timestamp predicate on it mis-fails. See round-9 batch-4 lesson.
+  const wsFlushed101 = await flushWsRow(context);
   const residual = residualRows(log, settleSec, 60);
   // Round-8 C-003: the leg-1 session must SURVIVE the failed settlement.
   // Fail-closed against reintroducing the wipe: with the store emptied, no
@@ -1129,17 +1138,15 @@ SCENARIOS["exchange-error"] = { run: async ({ context, page, rows, log }) => {
       { fixDependent: true },
     ),
     check(
-      "post-fix: update websocket connected on the preserved session (101 flushed at close)",
+      "post-fix: update websocket alive through the scenario (101 flushed at close)",
       () => {
-        const row = log.find(
-          (e) =>
-            reqUri(e) === "/ws/update" &&
-            statusOf(e) === 101 &&
-            logSec(e) > settleSec,
-        );
-        if (!row) {
+        // Round-9 batch-4 lesson: assert the FLUSH RESULT, not a log scan —
+        // the row's ts is its UPGRADE time (the preserved-session ws
+        // upgrades during pending, ~44 ms before the 401), so "after
+        // settlement" timestamp predicates mis-fail a healthy run.
+        if (!wsFlushed101) {
           throw new Error(
-            "no /ws/update 101 row after settlement — flushWsRow should have flushed the connection at close (round-9 C-006: without the flush this term was vacuous)",
+            "flushWsRow timed out: no /ws/update 101 row within 10s of context close — no live ws through the scenario (round-9 C-006: without the flush this term was vacuous)",
           );
         }
         return true;
@@ -1186,7 +1193,7 @@ SCENARIOS.hung = { delayMs: 15_000, run: async ({ context, page, rows, log, dela
   // page.url() on a closed page throws), then flush: the /ws/update row is
   // written at close, so without it "failed ws: 0" was vacuous.
   const finalUrlAtEnd = new URL(page.url());
-  await flushWsRow(context);
+  const wsFlushed101 = await flushWsRow(context);
   const residual = residualRows(log, logSec(ex), 60);
   const checks = [
     check(
@@ -1213,17 +1220,13 @@ SCENARIOS.hung = { delayMs: 15_000, run: async ({ context, page, rows, log, dela
       { fixDependent: true },
     ),
     check(
-      "post-fix: update websocket connected after the late-success recovery (101 flushed at close)",
+      "post-fix: update websocket alive through the scenario (101 flushed at close)",
       () => {
-        const row = log.find(
-          (e) =>
-            reqUri(e) === "/ws/update" &&
-            statusOf(e) === 101 &&
-            logSec(e) > logSec(ex),
-        );
-        if (!row) {
+        // Same flush-result contract as exchange-error: the row's ts is its
+        // UPGRADE time, so log scans with "after X" predicates mis-fail.
+        if (!wsFlushed101) {
           throw new Error(
-            "no /ws/update 101 row after the late 200 — flushWsRow should have flushed the recovered session's connection at close (round-9 C-006)",
+            "flushWsRow timed out: no /ws/update 101 row within 10s of context close — no live ws through the scenario (round-9 C-006)",
           );
         }
         return true;
