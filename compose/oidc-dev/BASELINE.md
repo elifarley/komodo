@@ -307,7 +307,9 @@ batch 2 re-ran the remaining three (`latency`, `m2-forced`,
 was refuted — see "The retired † argument" below. Batch 0's copies of those
 rows are historical only. **Round-8 batch 3 re-ran ALL SEVEN at the PR head
 (canonical; see the round-8 batch section below) after F-001 showed batch 2
-predated three detector commits.**
+predated three detector commits. Round-9 batch 4 added `m2-seeded` (the
+classifier's previously blind population) and re-ran ALL EIGHT at the PR
+head (canonical; see the round-9 batch section).**
 
 | Scenario | Pre-fix | Post-fix (final build) | Fix-dependent arms (`--post-fix`) |
 |---|---|---|---|
@@ -321,7 +323,9 @@ predated three detector commits.**
 
 **7/7 green — the "full suite green post-fix" acceptance criterion is met.**
 Re-certified at the PR head by round-8 batch 3 (`a861602a4`): same verdict,
-SHA-bound this time.
+SHA-bound this time. Round-9 batch 4 (`1f0f2673b0bb`) grew the suite to
+eight scenarios (the classifier's blind population added) and re-certified
+8/8 at the PR head.
 
 ### The retired † argument — what was wrong, and what replaced it
 
@@ -430,6 +434,79 @@ Round-8 contract rows worth calling out:
 
 **7/7 green — now certifying the code being merged, not two commits of
 history.**
+
+## Round-9 batch — 8/8 at the PR head; the classifier's blind population gets its own scenario
+
+Round-9 review found three majors, all in the classifier/evidence layer:
+
+- **C-003 (production):** the round-7 drift guard's second disjunct
+  (`jwtAbsent && !!jwt()`) misread the most common drop population as
+  upstream key-drift: in a redeem document opened with a VALID pre-existing
+  session, mogh's IIFE closure holds the OLD token (truthy), so a silently
+  dropped exchange stayed `phase: "ok"` — no toast, and the one console
+  error named the wrong hypothesis. "M2 closed at the komodo layer" was
+  session-less-only. Fix: drift discriminates by EQUALITY against the
+  exchanged jwt — a successful `add_and_change` sets the closure to the
+  exchanged jwt in-process, a dropped one leaves it untouched, so
+  `closure === exchanged` while the pinned key lacks that jwt is the
+  precise key-rename signature, and the prior-session population classifies
+  as the drop it is. No snapshot machinery needed.
+- **C-001 (harness):** the m2 surfacing arm accepted any truthy flag phase —
+  an unconsumed "ok" on /login is precisely the signature of a classifier
+  that failed to verdict drop (the ok branch consumes its flag BEFORE
+  navigating), and it printed PASS. Now asserts `phase === "drop"`.
+- **C-002 (harness):** the SHA-gate pathspec covered `ui/src` +
+  `compose/oidc-dev`, but the run exercises more merge surface: `ui` whole
+  (the bundle's build inputs), `client/core/ts` (the yarn-linked client the
+  same builder stage compiles), the stack topology
+  (`compose/oidc-dev.compose.yaml` sits OUTSIDE `compose/oidc-dev/`), and
+  `.dockerignore`. Widened; the acknowledged residual (the gitignored
+  `.env` digest pin) is documented in place.
+
+Minors: `composeEnabled`'s function branch falsy-coerces like react-query's
+`resolveEnabled` (C-004, latent); `unauthOrFail` counts 429 — the limiter's
+own rejection code — as a bad row (C-005); `exchange-error` and `hung` flush
+their ws row at close and assert the FLUSH RESULT, so `wsFails: 0` is no
+longer vacuous (C-006).
+
+The new `m2-seeded` scenario drives the C-003 population the suite had
+structurally never seen: the same route-intercepted sub-less exchange, with
+a session pre-seeded into the store. Its added arms: the drop verdicts and
+surfaces WITH a pre-existing session, and the seeded session is preserved
+through the drop (store neutrality).
+
+### Batch 4a (`78739f1fc0f8`, image `925a844ef0a0`, ~17:57 -03:00) — 7/8, and the failure was the check, not the fix
+
+The new ws-alive check failed deterministically on a healthy
+`exchange-error` run. The instrumented probe (one `VERIFY_ALLOW_DIRTY`
+diagnostic run, not evidence) showed the entries holding exactly one ws row
+— the preserved session's — with ts 44 ms BEFORE the settlement row: Caddy's
+ts on a ws row is the UPGRADE (request) time, and leg-2's provider ws
+upgrades during pending (the ws does not wait for the gated reads). The
+"after settlement" timestamp predicate mis-failed a healthy run; `hung`'s
+identical check passed only because its recovery ordering happened to
+upgrade after the late 200 — luck, not correctness. Fix (`1f0f2673b0bb`):
+`flushWsRow` returns whether the 101 row was observed and both scenarios
+assert THAT result — the invariant C-006 needs is "a ws connection existed
+and closed 101", which the flush itself proves.
+
+### Batch 4b (canonical — HEAD `1f0f2673b0bb`, image `925a844ef0a0` (built from the `c9873f808` tree; `ui` is unchanged by the two later harness-only commits), ~18:29–18:43 -03:00)
+
+```
+PASS post-fix: drop flag surfaced in-document on the login page (phase drop)
+PASS post-fix: drop surfaced WITH a pre-existing session (round-9 C-003 population)
+PASS pre-existing (seeded) session preserved through the silent drop (store neutrality)
+    ↳ observation (this phase): 0 unauth-or-401/403-or-auth-5xx rows, 0 failed ws handshakes, 5 authenticated /user 200 (leg-1 session preserved) in the 60s window
+```
+
+`SCENARIO … PASS` ×8 (`success` 7/7, `latency` 8/8 with round-trip 2029 ms,
+`m1-seeded` 4/4, `m2-forced` 5/5, `m2-seeded` 7/7, `exchange-error` 5/5 +
+2 pre-fix SKIPs, `hung` 6/6 + 1 pre-fix SKIP, `isolation` 3/3),
+`ALL SCENARIOS PASS`, exit 0; all eight ndjson meta rows stamped
+`head=1f0f2673b0bb, dirty=0`.
+
+**8/8 green — the suite now exercises the population its own classifier
+used to misclassify.**
 
 ## m2-forced — the silent drop now surfaces (M2 closed at the komodo layer)
 
@@ -820,7 +897,12 @@ container before the batch; the re-run rows are `latency` 08:58, `m2-forced`
 FAIL, root-caused to the doomed-document consume race, fixed in
 `dfa654392`), **3b canonical 17:08–17:14 -03:00 (HEAD `a861602a4`, image
 `778aee5742c6`, 7/7, every ndjson meta row stamped
-`head=a861602a4279, dirty=0`)**. Harness per README "Run"
+`head=a861602a4279, dirty=0`)**; round-9 batches 4a/4b — 4a ~17:57 -03:00
+(HEAD `78739f1fc0f8`, 7/8 — the new ws-alive check mis-failed a healthy run
+on a wrong ts-model predicate; root-caused by an instrumented diagnostic and
+fixed in `1f0f2673b0bb`), **4b canonical ~18:29–18:43 -03:00 (HEAD
+`1f0f2673b0bb`, image `925a844ef0a0`, 8/8, every ndjson meta row stamped
+`head=1f0f2673b0bb, dirty=0`)**. Harness per README "Run"
 (podman shim, `compose/oidc-dev.compose.yaml`, `oidc-provider@9.12.2`); raw
 ndjson evidence in gitignored `compose/oidc-dev/out/` (batch 3b files are
 the surviving evidence for all seven rows); run stdout

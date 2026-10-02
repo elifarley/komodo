@@ -319,6 +319,7 @@ node compose/oidc-dev/verify.mjs success          # exit 0 = PASS
 node compose/oidc-dev/verify.mjs latency          # sets DELAY_AUTH_MS=2000 itself, restores 0
 node compose/oidc-dev/verify.mjs m1-seeded        # sets DELAY_AUTH_MS=1500 (widens the M1 window), restores 0
 node compose/oidc-dev/verify.mjs m2-forced
+node compose/oidc-dev/verify.mjs m2-seeded        # same sub-less exchange with a pre-existing session seeded (round-9 C-003 population)
 node compose/oidc-dev/verify.mjs exchange-error   # ~90 s: 60 s residual window is OBSERVED, not assumed
 node compose/oidc-dev/verify.mjs hung             # sets DELAY_AUTH_MS=15000, ~2.5 min
 node compose/oidc-dev/verify.mjs isolation
@@ -408,7 +409,7 @@ Notes:
 | Spec row | Scenario | Pre-fix assertion (mechanism) | Post-fix assertion (`--post-fix`) |
 |---|---|---|---|
 | Exchange 200, token stored | `success`, `latency` | exchange 200; authed follow-up ≤3 s; ws 101 + on_login; dashboard rendered; window total ≤4 & sliding ≤4 (+ round-trip ≥ delay in `latency`) | unchanged — these are the regression guard (green pre-fix) |
-| Exchange 200, token dropped (M2) | `m2-forced` | upstream 200 but sub-less jwt never stored; reload lands `/login` | drop flag surfaced in-document on the login page (`komodo-redeem` phase `drop` / notification text) |
+| Exchange 200, token dropped (M2) | `m2-forced`, `m2-seeded` | upstream 200 but sub-less jwt never stored; reload lands `/login` (`m2-seeded`: with a pre-existing session — the population the drift classifier once misread as key-drift) | drop flag surfaced in-document with `phase === "drop"` (strict — an unconsumed `ok` here is a classifier regression, not a pass); seeded row also asserts the prior session survives (store neutrality) |
 | Exchange error (429 / consumed) | `exchange-error` | replayed exchange 401; no navigation for 8 s; LoadingScreen still up (eternal spinner, M5) | in-document convergence (exactly 1 document load), leg-1 session PRESERVED (≥1 authed `/user` 200 post-settlement; final `/` — round-8 C-003 store neutrality), zero-residual 60 s window |
 | Hung exchange | `hung` | round-trip ≥ 15000 ms; LoadingScreen up with no OBSERVED gap until the late 200 (100 ms poll); slow-success reload documented | watchdog dropped the gate pre-settlement (loader-off before the 200); final landing `/` via the late-success redirect |
 | No token, direct `/` | covered by the drive shape | every scenario's pre-session gate bounce (302 → portal) is asserted implicitly by the drive reaching the interaction page | unchanged |
