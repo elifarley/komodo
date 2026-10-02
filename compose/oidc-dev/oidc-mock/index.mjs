@@ -2,6 +2,10 @@
 // Issues authorization codes for a static user; auto-approves consent;
 // exposes /verify for Caddy forward_auth (session cookie check).
 //
+// SECURITY BOUNDARY: this mock auto-consents ANY caller (any login/password
+// grants a session) — it must never be exposed beyond localhost / the compose
+// network (hence the 127.0.0.1 port binding in oidc-dev.compose.yaml).
+//
 // API notes verified against the pinned oidc-provider@9.12.2 source
 // (the task plan was drafted against a version string that does not exist
 // on npm — "11.10.1" — so this file follows v9.12.2's actual API):
@@ -35,6 +39,7 @@ const provider = new Provider(issuer, {
   clients: [
     {
       client_id: "komodo-harness",
+      // Throwaway harness secret — never use it outside compose/oidc-dev.
       client_secret: "komodo-harness-secret",
       redirect_uris: ["https://komodo.oidctest.localhost/auth/oidc/callback"],
       grant_types: ["authorization_code"],
@@ -75,7 +80,16 @@ const providerHandler = provider.callback();
 
 http
   .createServer(async (req, res) => {
-    const url = new URL(req.url ?? "/", issuer);
+    // Malformed request lines (e.g. `GET //`) make new URL() throw; without
+    // this guard the rejection is unhandled and Node kills the process
+    // (exit 99) — a published port means any scanner could kill the mock
+    // mid-login. 400 and keep serving.
+    let url;
+    try {
+      url = new URL(req.url ?? "/", issuer);
+    } catch {
+      return res.writeHead(400).end("bad request");
+    }
     if (url.pathname === "/verify") {
       // Honest failures: lookup ERROR is 503 (provider/API problem), absence
       // of session is 401. Caddy's access log then discriminates them.
