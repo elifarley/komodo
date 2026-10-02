@@ -29,8 +29,10 @@
 
 > **Task 11 post-fix results:** the second half of this document (same harness,
 > `--post-fix` enforced, branch UI) is the "Post-fix run (Task 11)" section at
-> the bottom — including one **real post-fix FAIL** (`m1-seeded`) with
-> root-cause analysis, and the upstream issue drafts.
+> the bottom — **all seven scenarios green**. `m1-seeded` reached green only via
+> the `641f966da` pre-arm fix, which Task 11's first post-fix run exposed
+> (FAIL → root cause → fix → PASS; resolution below), and the upstream issue
+> drafts close the section.
 
 | Scenario | Result | Mechanism signal |
 |---|---|---|
@@ -254,36 +256,64 @@ Completes the second half of this document: same harness, same drive, same suite
 fix-dependent assertions were ENFORCED (never SKIPped) and the pre-fix mechanism
 assertions SKIPped by design (`reportChecks`).
 
-- **Date:** 2026-10-02 (runs 02:14:55–02:25:29 -03:00; individual runs, ≥16 s
-  apart — the per-IP limiter discipline)
-- **Suite:** `verify.mjs` byte-identical to `fa53da3c0` (no local edits; only the
-  CLI flag differs from the Task 5 batch)
-- **UI under test:** the branch fix (`49802408e…9d9a38a88`, spec §7.1–§7.7).
-  Core image rebuilt for this run (`localhost/komodo-oidc-dev-core` id
-  `5190032c1dbe`, built from HEAD `9d9a38a88`); before the runs the served
-  bundles were grepped in-container for fix markers (`komodo-redeem` in
-  `index-*.js`, the §7.3 drop toast in `login-*.js`), and the served
-  `index-CfUQi4Ph.js` hash matches the host `cd ui && yarn build` output — the
-  image provably serves this branch's build.
-- **Host build acceptance:** `cd ui && yarn build` clean (exit 0).
-- **Evidence:** all seven `out/<scenario>.ndjson` files refreshed by this batch
-  (gitignored); excerpts below follow the same elision discipline as the pre-fix
-  sections.
+- **Date / builds:** batch 0 — 02:14:55–02:25:29 -03:00 against the
+  **pre-pre-arm build** (`5190032c1dbe`, HEAD `9d9a38a88`); batch 1 (final) —
+  02:51:17–02:54:55 -03:00 against the **final build** (`28f89a5be8af`, HEAD
+  `641f966da`). Individual runs, ≥16 s apart — the per-IP limiter discipline.
+  Batch 0 first ran every scenario and EXPOSED a real fix defect (m1-seeded
+  FAIL, root-caused below); `641f966da` (module-scope pre-arm, reviewed) closed
+  it, and batch 1 re-baselined the gate-sensitive rows on the final image:
+  `success`, `m1-seeded`, `hung`, `isolation`.
+- **Suite:** batch 0 ran `verify.mjs` byte-identical to `fa53da3c0`; batch 1
+  runs it with the one-predicate scoping fix from `641f966da` (documented in
+  the m1 resolution — the m1 value arm's shim filter self-matched the
+  exchange's own stale-jwt dispatch row). All runs carry `--post-fix`
+  (fix-dependent checks ENFORCED; pre-fix mechanism assertions SKIPped by
+  design).
+- **UI under test (batch 1):** the branch fix with pre-arm
+  (`49802408e…641f966da`, spec §7.1 incl. the module-scope pre-arm addendum,
+  §7.2–§7.7). Core image `localhost/komodo-oidc-dev-core` id `28f89a5be8af`,
+  built from HEAD `641f966da`; the running core container was verified to run
+  that image (`docker inspect` image sha match) before the batch. Batch 0's
+  image (`5190032c1dbe`, HEAD `9d9a38a88`) had its served
+  `index-CfUQi4Ph.js` hash matched against the host `yarn build` output.
+- **Host build acceptance:** `cd ui && yarn build` clean (exit 0, verified on
+  both builds).
+- **Evidence:** `out/<scenario>.ndjson` files refreshed by each batch
+  (gitignored — batch 1 is the surviving file for its four rows); excerpts
+  below follow the same elision discipline as the pre-fix sections.
 
 ## Verdicts (pre-fix → post-fix)
 
-| Scenario | Pre-fix (Task 5) | Post-fix (this run) | Fix-dependent arms (`--post-fix`) |
+Rows marked † ran on the pre-pre-arm build (batch 0) — kept because their
+asserted mechanisms do not touch the pre-arm window the pre-arm build changed
+(reasoning below the table); all others are batch 1 (final build).
+
+| Scenario | Pre-fix (Task 5) | Post-fix (final unless †) | Fix-dependent arms (`--post-fix`) |
 |---|---|---|---|
 | `success` | PASS 7/7 | **PASS 7/7** | n/a — regression guard holds: window total 0, sliding 0, ws 101 + on_login, dashboard `/` |
-| `latency` | PASS 8/8 | **PASS 8/8** | n/a — regression guard holds: round-trip 2030 ms ≥ 2000 ms |
-| `m1-seeded` | PASS 4/4 (M1 REPRODUCED) | **FAIL 2/4** | **§7.5 zero-stale-reads arm FAILS** — 2 stale-token reads escape pre-arm (deep-dive below); fresh-pointer arm PASSES |
-| `m2-forced` | PASS 4/4 +1 SKIP (M2 REPRODUCED) | **PASS 5/5** | drop flag surfaced in-document on the login page — M2 no longer silent |
-| `exchange-error` | PASS 3/3 +2 SKIP (M5 REPRODUCED) | **PASS 3/3** (2 pre-fix arms SKIP) | converged failure in-document (exactly 1 document load, final `/login`) + zero-residual 60 s (0 bad rows, 0 failed ws) |
-| `hung` | PASS 3/3 +3 SKIP (slow success) | **PASS 5/5** (1 pre-fix arm SKIP) | watchdog dropped the gate 12.0 s after landing — 3013 ms BEFORE the late 200; zero-residual 60 s (0/0); §7.7 recovered the late success → landed `/` |
+| `latency` † | PASS 8/8 | **PASS 8/8** | n/a — regression guard holds: round-trip 2030 ms ≥ 2000 ms |
+| `m1-seeded` | PASS 4/4 (M1 REPRODUCED) | **PASS 4/4** (was **FAIL 2/4** on batch 0) | §7.5 zero-stale-reads arm: **observed 0** stale reads; value-absence arm PASS (scoped); fresh-pointer PASS |
+| `m2-forced` † | PASS 4/4 +1 SKIP (M2 REPRODUCED) | **PASS 5/5** | drop flag surfaced in-document on the login page — M2 no longer silent |
+| `exchange-error` † | PASS 3/3 +2 SKIP (M5 REPRODUCED) | **PASS 3/3** (2 pre-fix arms SKIP) | converged failure in-document (exactly 1 document load, final `/login`) + zero-residual 60 s (0 bad rows, 0 failed ws) |
+| `hung` | PASS 3/3 +3 SKIP (slow success) | **PASS 5/5** (1 pre-fix arm SKIP) | watchdog dropped the gate 12.1 s after landing — 3.0 s BEFORE the late 200; zero-residual 60 s (0/0); §7.7 recovered the late success → landed `/` |
 | `isolation` | PASS 3/3 | **PASS 3/3** | n/a — §7.1's filtered subscription introduced no gate flip (regression guard holds) |
 
-**6/7 green; `m1-seeded` red on its fix-dependent arm — a real result, analyzed
-below (not a harness artifact and not papered over).**
+**7/7 green — the spec §11 "full suite green post-fix" criterion is met.**
+
+† reasoning (why the pre-pre-arm run stands for these rows): the pre-arm
+change (`641f966da`) alters exactly one thing — WHEN the gate closes on a
+document whose URL carries `redeem_ready=true` (module scope, before first
+render, instead of at the redeem mutation's `onMutate`). The three † rows
+assert nothing about that window: `latency` is `success` plus the delay-knob
+round-trip assertion (`success` re-ran green on the final build);
+`m2-forced` asserts the drop DETECTION at settlement (settlement listener +
+login-page toast — code paths downstream of the gate) plus the still-true
+silent-drop arms; `exchange-error` asserts the settled-failed CONVERGENCE
+(the §7.2 effect) — the same settlement path `hung`'s watchdog convergence
+exercises, and `hung` re-ran green on the final build. Batch 0's `m1-seeded`
+FAIL, by contrast, was precisely a pre-arm-window assertion — re-run required,
+and done.
 
 ## m2-forced — the silent drop now surfaces (M2 closed at the komodo layer)
 
@@ -291,7 +321,8 @@ Pre-fix: upstream 200 with a sub-less jwt → `add_and_change` early-returns on
 falsy `sub` (`mogh_auth_client/dist/tokens.js`: `if (!user_id) return;`), zero
 TOKENS transitions, reload lands on `/login` with **no signal**.
 
-Post-fix run: the same drive (route interception rewrites `body.jwt` to the
+Post-fix run (batch 0, pre-pre-arm build — kept per the † reasoning above): the
+same drive (route interception rewrites `body.jwt` to the
 sub-less token; upstream still 200), and the fix-dependent arm PASSED:
 
 ```
@@ -313,8 +344,8 @@ default raced exactly this probe). The library-level drop itself is upstream's
 Pre-fix: replayed `/?redeem_ready=true` → 401 → no navigation for 8 s, last
 loader state `on` indefinitely (eternal spinner), URL keeping `redeem_ready=true`.
 
-Post-fix run — the two pre-fix arms SKIPped as designed, both fix-dependent arms
-PASSED:
+Post-fix run (batch 0, pre-pre-arm build — kept per the † reasoning above): the
+two pre-fix arms SKIPped as designed, both fix-dependent arms PASSED:
 
 ```
 PASS replayed exchange 401 observed (one-shot consumed session; ts=1790918528.219)
@@ -339,31 +370,38 @@ exhaust the 5-per-15 s budget into 429s; draft issue (d) below).
 watchdog, one continuous spinner for 15.6 s, then the late 200 converged
 normally (slow success).
 
-Post-fix run — the pre-fix arm SKIPped; all three fix-dependent arms PASSED:
+Post-fix run (batch 1, final build) — the pre-fix arm SKIPped; all three
+fix-dependent arms PASSED:
 
 ```
-LOADER 1790918625455 on     ← redeem landing
-LOADER 1790918637453 off    ← watchdog (12.0 s after landing) dropped the gate — 3013 ms BEFORE the late 200
-req    1790918640466  POST /auth/login/ExchangeForJwt 200 (duration 15.030 s)
-TOKENS 1790918640642 {"current":"6abf067c…"}   ← the LATE 200 still stored its token
-LOADER 1790918640745 on / 1790918641045 off    ← §7.7 redirect transit
+DOC    1790920382363  GET /?redeem_ready=true 200
+LOADER 1790920382486  on     (doc+123 ms)   ← pre-armed pending: LoadingScreen immediately
+LOADER 1790920394468  off    (doc+12105 ms) ← watchdog dropped the gate — 3040 ms BEFORE the late 200
+req    1790920397508  POST /auth/login/ExchangeForJwt 200 (round-trip 15.043 s)
+TOKENS 1790920397511  {"current":"6abf067c…"}   ← the LATE 200 still stored its token
+LOADER 1790920397779 on / 1790920398080 off    ← §7.7 redirect transit
 final URL: /  (§7.7 late-success redirect: login page found the fresh flag + jwt and sent the user to /)
 PASS post-fix: watchdog dropped the gate BEFORE the late 200 (loader-off observed pre-settlement)
 PASS post-fix: zero-residual 60s window after the watchdog settlement (0; failed ws: 0)
 PASS post-fix: watchdog converges (gate drops -> /login with §7.7 late-success redirect)
 ```
 
-This is the full §7.1→§7.7 sequence working end-to-end: watchdog fired at
-~T+12.0 s (landing 625455 → off 637453 = 11998 ms), the gate settled-failed, the
-user landed on `/login` instead of spinning, and when the exchange finally
-returned 200 three seconds later, mogh_ui's own handler re-stored the token and
-the one-shot §7.7 redirect (fresh `ok` flag + jwt present in the store →
+This is the full §7.1→§7.7 sequence working end-to-end, now with the pre-arm
+engaged: the LoadingScreen is up from doc+123 ms (module-scope pre-arm), the
+watchdog fired at doc+12105 ms and settled-failed the gate, the user landed on
+`/login` instead of spinning, and when the exchange finally returned 200 three
+seconds later, mogh_ui's own handler re-stored the token and the one-shot §7.7
+redirect (fresh `ok` flag + jwt present in the store →
 `location.replace(backto ?? "/")`) recovered the login. Zero residual over the
-60 s window.
+60 s window. (Batch 0 had already passed this row on the pre-pre-arm build —
+same three arms; the watchdog path was never pre-arm-sensitive, since the
+mutation's own settlement handles both.)
 
-## m1-seeded — §7.5 read deferral: **FAIL** (real post-fix defect)
+## m1-seeded — §7.5 read deferral: **FAIL on batch 0 → PASS on the final build** (§11 m1 criterion MET)
 
-Verbatim from the run (exit 1):
+### Batch 0 — the failure that found the defect (image `5190032c1dbe`, HEAD `9d9a38a88`)
+
+Verbatim from the batch-0 run (exit 1):
 
 ```
 PASS exchange 200 observed (pending window closed; ts=1790918209.054)
@@ -387,16 +425,10 @@ LOADER 1790918207541  on                                          ← LoadingScr
 TOKENS 1790918209056  {"current":"6abf067c…"}                     ← fresh pointer (PASS)
 ```
 
-### What the fix did and did not change (both verified from this one ndjson)
-
-- **During actual pending — [exchange dispatch → 200] — the deferral IS in
-  force:** zero fetches to `/user|/read` in that span (and no ws attempt). §7.5's
-  mechanism works from the flip onward.
-- **But the two stale reads escape BEFORE the flip**, with the same shape as the
-  pre-fix batch (there: reads at `…697471/472` vs dispatch `…477`): first-commit
-  reads that the gate cannot reach. Wire-level M1 evidence is therefore
-  **unchanged by the fix** in this scenario — same two reads, same 500s, same
-  ~6 ms pre-dispatch timing.
+What batch 0's ndjson proved (both sides, from this one file): the deferral IS
+in force during actual pending — zero `/user|/read` fetches in
+[exchange dispatch → 200] — but the two stale reads escape BEFORE the flip, with
+the same shape as the pre-fix batch (reads at `…697471/472` vs dispatch `…477`).
 
 ### Root cause — wiring, not timing luck
 
@@ -409,26 +441,54 @@ TOKENS 1790918209056  {"current":"6abf067c…"}                     ← fresh po
    observers commit with `enabled: true` and their mount fetches fire at
    +98 ms — ~6 ms before the exchange dispatch (+104 ms) flips the gate; the
    LoadingScreen row lands +119 ms (100 ms shim poll).
-3. The `router.tsx` comment ("onMutate … flips the gate to `pending` before the
-   snapshot read below, so render #1 is already the LoadingScreen") is true for
-   Router's own output, but no render-phase flip inside a child can cover an
-   ANCESTOR's same-commit observers. Task 9's deferral is structurally
-   one render-phase step behind the arm.
-4. Consequently the §8-map arm as specified ("zero such rows" in
-   [drive start → exchange 200]) is unreachable with this wiring, while Task 9's
-   own narrower verify wording ("no stale-token requests **during pending**") IS
-   satisfied. Note this also corrects the Task 5 premise reading above: the
-   stale reads never fired "during pending" — they fire in the same commit as
-   the arm, pre-dispatch; the check window ([drive start → exchange 200]) simply
-   includes that pre-arm gap.
+3. A render-phase flip inside a CHILD cannot cover an ANCESTOR's same-commit
+   observers. The `router.tsx` comment ("onMutate … flips the gate to `pending`
+   before the snapshot read below, so render #1 is already the LoadingScreen")
+   was true for Router's own output only. This also corrects the Task 5 premise
+   reading above: the stale reads never fired "during pending" — they fire in
+   the same commit as the arm, pre-dispatch; the check window
+   ([drive start → exchange 200]) simply includes that pre-arm gap.
 
-Minimal candidate remedy (for a follow-up task — NOT attempted here, fix code is
-Tasks 6–10 scope): pre-arm the gate at module scope in `main.tsx` before the
-first render when `location.search` carries `redeem_ready=true` (mirroring
-mogh_ui's own module-level `jwt_redeem_sent` guard), with the watchdog armed
-from the same point and the existing settlement listener remaining the sole
-source of `settled-*`. That closes the same-commit hole without touching the
-tree shape.
+### The fix — module-scope pre-arm (`641f966da`, reviewed)
+
+Exactly the minimal remedy batch 0's analysis sketched: `redeem-gate.ts`
+initializes `state = "pending"` at import (before any React render) when
+`location.search` carries `redeem_ready=true`, and arms the watchdog from the
+same point — mirroring mogh_ui's own module-level `jwt_redeem_sent` guard. The
+provider's FIRST render already sees the gate closed; the later real `onMutate`
+flip is idempotent (equality guard) and its watchdog arm a no-op (already set).
+Normal loads (no param) stay `idle`, byte-identical. The pre-armed watchdog is
+also defensive: if mogh_ui drift ever stopped firing the mutation, the window
+still converges to `settled-failed` (with its `remove_all` hygiene) within
+`WATCHDOG_MS`.
+
+Companion checker fix in the same commit (verify.mjs, one predicate): the m1
+value arm's shim filter had matched ANY fetch row carrying the stale jwt tail
+before the wire exchange ts — but the redeem request itself legitimately
+carries the stale jwt (it IS the credential being exchanged), and the shim logs
+that row at DISPATCH, necessarily before the wire completion ts. Once the real
+leaks were closed, the exchange self-matched and false-failed the absence arm
+(first post-pre-arm run: wire observed 0, yet the value arm FAILED on the
+exchange dispatch row alone). The filter is now scoped to the same
+`^/(user|read)` paths the wire arm scopes — pre-fix behavior unchanged,
+post-fix absence meaningful.
+
+### Batch 1 — PASS on the final build (image `28f89a5be8af`, HEAD `641f966da`)
+
+```
+PASS exchange 200 observed (pending window closed; ts=1790920316.824)
+PASS stale-token requests fire during the redeem window (wire: auth+rejected in [drive start -> exchange 200]; observed 0, statuses -)
+PASS stale token VALUE confirmed on those requests (fetch shim tail …hwIjoxfQ.stale-signature)
+PASS fresh token stored after the exchange (current pointer moved off stale-user)
+SCENARIO m1-seeded PASS   (exit 0)
+```
+
+The ndjson shows the pre-arm doing exactly what the root cause demanded: the
+redeem document loads at `…315199`, the exchange dispatch fetch goes out at
+`…315295` (doc+96 ms) — and **the exchange itself is the ONLY fetch in
+[doc load → 200]**; the LoadingScreen row lands doc+117 ms; zero stale-tail
+fetches to `/user|/read` anywhere before the 200. The §8-map arm ("zero such
+rows") holds on the final build; the spec §11 m1 criterion is met.
 
 ---
 
@@ -572,10 +632,11 @@ express this):**
 
 ---
 
-*Metadata (post-fix section): produced by Task 11 (fresh runs, 2026-10-02
-02:14–02:25 -03:00); harness per README "Run" (podman shim,
-`compose/oidc-dev.compose.yaml`, `oidc-provider@9.12.2`); suite at HEAD
-`9d9a38a88` (verify.mjs identical to `fa53da3c0`); core image
-`localhost/komodo-oidc-dev-core` `5190032c1dbe` built from that HEAD; raw ndjson
-evidence in gitignored `compose/oidc-dev/out/`; run stdout archived by the task
-outside the repo.*
+*Metadata (post-fix section): produced by Task 11 — batch 0 2026-10-02
+02:14–02:25 -03:00 (HEAD `9d9a38a88`, image `5190032c1dbe`, verify.mjs as
+committed at `fa53da3c0`); batch 1 (final) 02:51–02:55 -03:00 (HEAD
+`641f966da`, image `28f89a5be8af`, verify.mjs with `641f966da`'s one-predicate
+m1 scoping fix). Harness per README "Run" (podman shim,
+`compose/oidc-dev.compose.yaml`, `oidc-provider@9.12.2`); raw ndjson evidence
+in gitignored `compose/oidc-dev/out/` (batch 1 files are the surviving
+evidence for its rows); run stdout archived by the task outside the repo.*
