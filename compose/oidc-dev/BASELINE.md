@@ -1,6 +1,7 @@
 # Pre-fix baseline — mechanisms reproduced (Task 5, PHASE-1 GATE)
 
-- **Date:** 2026-10-02 (runs 00:10:04–00:16:16, host local time -03:00)
+- **Date:** 2026-10-02 (batch runs 00:10:04–00:16:16, host local time -03:00;
+  `exchange-error` re-run at 00:30:25 — provenance note in its section)
 - **Suite commit / HEAD:** `fa53da3c0` — `compose/oidc-dev/verify.mjs` exactly as
   committed there (no local edits); branch `komodo-oidc-login-jwt-redeem-race-fix-1665`
 - **UI under test:** **stock v2.3.3** — last commit touching `ui/` is the `v2.3.3`
@@ -18,8 +19,11 @@
   `SCENARIO <name> PASS` with exit 0; FIX-DEPENDENT checks report `SKIP` pre-fix by
   design (never PASSed without `--post-fix`).
 - **Evidence files:** `out/<scenario>.ndjson` (gitignored). Excerpts below quote the
-  evidentiary rows verbatim except that oversized jwt strings are cut to `…` — the
-  `out/` files carry the full values.
+  evidentiary rows with two uniform elisions, both cut to `…` — the `out/` files carry
+  the full values: (1) oversized jwt strings are truncated mid-value; (2) fields with
+  no evidentiary weight in that excerpt (`host`, uncited `ts`/`ts_ms`, `duration_s`)
+  are dropped from the middle of a row. Never elided: `url`, `status`, `auth`, and any
+  timestamp the surrounding text cites.
 
 **Gate verdict: ≥1 mechanism reproduced (M1, M2, M5) → PROCEED to Phase 2 (Tasks 6–10).**
 
@@ -71,19 +75,20 @@ the always-mounted provider subtree **before** the exchange settles:
 {"kind":"fetch","ts_ms":1790910697472,"path":"/read/GetCoreInfo","auth_tail":"hwIjoxfQ.stale-signature"}
 {"kind":"req","ts":1790910697.4745677,"method":"GET","url":"/user","auth":true,"status":500,"duration_s":0.001200671}
 {"kind":"req","ts":1790910697.4746535,"method":"POST","url":"/read/GetCoreInfo","auth":true,"status":500,"duration_s":0.000997077}
-{"kind":"req","ts":1790910699.008,…,"method":"POST","url":"/auth/login/ExchangeForJwt","auth":false,"status":200}   ← window closes 1.53 s LATER
+{"kind":"req","ts":1790910699.008,…,"method":"POST","url":"/auth/login/ExchangeForJwt","auth":true,"status":200}   ← window closes 1.53 s LATER
 ```
 
 Wire rows prove auth-header **presence** + rejection + timing (Caddy redacts the
 value); the fetch-shim rows prove the **value** — those two requests carried the
 seeded stale token, not the fresh one. The same shim shows the stale token is also
-attached to the `ExchangeForJwt` call itself (ts 1790910697477) — mogh_ui attaches
+attached to the `ExchangeForJwt` call itself (ts 1790910697477), corroborated on the
+wire by that row's own `auth:true` — mogh_ui attaches
 whichever jwt is current to *all* API calls, which is why §6's residual unit counts
 auth-bearing 5xx, not just 401/403. After settlement the pointer moves off the seed:
 
 ```
 {"kind":"tokens","ts_ms":1790910696769,"detail":"TOKENS 1790910696767 {\"current\":\"stale-user\",…}"}
-{"kind":"tokens","ts_ms":1790910699009,"detail":"TOKENS 1790910699009 {\"current\":\"6abf067c65cacd7846f1e424\",\"tokens\":[{…stale…},{\"user_id\":\"6abf067c…\",\"jwt\":\"…\"}]}"}
+{"kind":"tokens","ts_ms":1790910699010,"detail":"TOKENS 1790910699009 {\"current\":\"6abf067c65cacd7846f1e424\",\"tokens\":[{…stale…},{\"user_id\":\"6abf067c…\",\"jwt\":\"…\"}]}"}
 ```
 
 **Rejection code is 500, not 401.** Core answers the bad-signature jwt with 500 on
@@ -112,7 +117,7 @@ sub-less jwt. Upstream is 200; the client never stores it; the reload lands on
 {"kind":"req","ts":1790910746.422467,…,"method":"POST","url":"/auth/login/ExchangeForJwt","auth":false,"status":200,"duration_s":0.026053597}
 {"kind":"tokens","ts_ms":1790910739430,"detail":"TOKENS 1790910739429 null"}
 {"kind":"tokens","ts_ms":1790910740042,"detail":"TOKENS 1790910740041 null"}        ← … every TOKENS row stays null
-{"kind":"req","ts":1790910746.6,…,"method":"GET","url":"/assets/login-DoZQWzrW.js","auth":false,"status":200}   ← post-exchange reload loads the LOGIN chunk
+{"kind":"req","ts":1790910746.5997264,…,"method":"GET","url":"/assets/login-DoZQWzrW.js","auth":false,"status":200}   ← post-exchange reload loads the LOGIN chunk
 {"kind":"req","ts":1790910746.64838,…,"method":"POST","url":"/auth/login/GetLoginOptions","auth":false,"status":200}
 checks: sub-less jwt never lands in the token store PASS · reload lands on /login PASS
 ```
@@ -124,17 +129,23 @@ silently. The only user-visible consequence is the login page; the post-fix
 
 ## exchange-error — **M5 REPRODUCED**
 
+> Provenance: `out/` is a rolling cache — any later run of the suite overwrites a
+> scenario's ndjson. The original batch run of this row (00:12–00:14) was overwritten
+> by an out-of-band re-run, so this section was **re-run by this task** (same committed
+> suite, same PASS verdict, stdout captured) and cites that run below. All other
+> sections cite the batch runs whose files are still on disk.
+
 Leg 1 completes a full login (dashboard). Replaying `/?redeem_ready=true` re-fires
 the exchange against the ONE-SHOT pending state → 401 (this also burns one of the
 5-per-15s limiter attempts; a UI loop that re-fires exhausts the budget and then
 429s — the closest analogue to the reporter's "7 exchanges / 0 authed"):
 
 ```
-{"kind":"req","ts":1790910774.1744032,…,"method":"POST","url":"/auth/login/ExchangeForJwt","auth":false,"status":200}   ← leg 1
-{"kind":"req","ts":1790910779.3302882,…,"method":"GET","url":"/?redeem_ready=true","auth":false,"status":200}           ← replay navigation
-{"kind":"fetch","ts_ms":1790910779385,"path":"/auth/login/ExchangeForJwt","auth_tail":"zGIRvGDf47C0zW-MtCIJQDrk"}        ← still-stored jwt attached
-{"kind":"req","ts":1790910779.4028575,…,"method":"POST","url":"/auth/login/ExchangeForJwt","auth":true,"status":401,"duration_s":0.014221834}
-{"kind":"loader","ts_ms":1790910779445,"state":"on","detail":"LOADER 1790910779445 on"}                                  ← last loader row, ever
+{"kind":"req","ts":1790911828.2776556,…,"method":"POST","url":"/auth/login/ExchangeForJwt","auth":false,"status":200}   ← leg 1
+{"kind":"req","ts":1790911833.434673,…,"method":"GET","url":"/?redeem_ready=true","auth":false,"status":200}             ← replay navigation
+{"kind":"fetch","ts_ms":1790911833470,"path":"/auth/login/ExchangeForJwt","auth_tail":"k1pJsydNq3BaMmVjUKVrhvYg"}        ← still-stored jwt attached
+{"kind":"req","ts":1790911833.4868107,…,"method":"POST","url":"/auth/login/ExchangeForJwt","auth":true,"status":401,"duration_s":0.016108626}
+{"kind":"loader","ts_ms":1790911833544,"state":"on","detail":"LOADER 1790911833544 on"}                                  ← last loader row, ever
 ```
 
 After the 401: **no navigation for the 8 s observation** (URL still
@@ -223,7 +234,8 @@ comparison.
 
 ---
 
-*Metadata: produced by Task 5 (fresh runs, 2026-10-02 00:10–00:16 -03:00); harness
+*Metadata: produced by Task 5 (fresh runs, 2026-10-02 00:10–00:16 -03:00;
+`exchange-error` re-run 00:30 -03:00); harness
 per README "Run" (podman shim, `compose/oidc-dev.compose.yaml`, digest-pinned core
 `sha256:bca73d0e…`, `oidc-provider@9.12.2`); suite at HEAD `fa53da3c0`; raw ndjson
 evidence in gitignored `compose/oidc-dev/out/`.*
