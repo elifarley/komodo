@@ -11,10 +11,12 @@ JSON access log) and the `delay` sidecar (latency knob for `/auth/login/*`).
 Create `compose/oidc-dev/.env` first — it doesn't exist until Step 1 pins the digest.
 
 ```sh
-# The access log is a bind-mounted FILE: create it BEFORE the first `up`
-# (a missing bind source is pre-created as a DIRECTORY, which breaks Caddy's
-# file logger).
-touch compose/oidc-dev/access.log
+# Bind-mounted FILE sources must exist BEFORE the first `up` (a missing bind
+# source is pre-created as a DIRECTORY, which breaks Caddy's file logger and
+# turns the later CA export into "Is a directory" errors).
+touch compose/oidc-dev/access.log compose/oidc-dev/caddy-root-ca.crt
+# If a previous `up` already materialized either source as a directory:
+rmdir compose/oidc-dev/access.log compose/oidc-dev/caddy-root-ca.crt 2>/dev/null
 
 docker compose -f compose/oidc-dev.compose.yaml --env-file compose/oidc-dev/.env up -d --build
 docker compose -f compose/oidc-dev.compose.yaml ps
@@ -35,8 +37,9 @@ docker compose -f compose/oidc-dev.compose.yaml --env-file compose/oidc-dev/.env
 `caddy-root-ca.crt` is gitignored (it is derived state — a fresh volume makes a
 new CA and a stale committed file would silently break core's discovery fetch).
 Core reads it via `SSL_CERT_FILE=/config/caddy-root-ca.crt` (honored by
-rustls-native-certs / openssl-probe). Symptom when missing/stale: core logs
-`invalid peer certificate: UnknownIssuer` on `/auth/oidc/login` and returns 500.
+rustls-native-certs / openssl-probe). Symptom when missing/stale/empty: core
+logs `invalid peer certificate: UnknownIssuer` on `/auth/oidc/login` and
+returns 500 — until the export + `up -d core` recreate below.
 
 > On hosts where `docker` is a podman shim (no compose plugin), use the standalone
 > binary against the podman socket: `docker-compose -f … --env-file … up -d --build`
@@ -252,11 +255,14 @@ reality won and is documented here.
    certificate: UnknownIssuer` until Caddy's root was exported (command under
    Run) and bind-mounted into core. `SSL_CERT_FILE` is honored (openssl-probe),
    so no image rebuild or CA-bundle overwrite is needed.
-4. **`forward_auth` lives INSIDE the `route` block.** In Caddy's default
-   directive order `route`/`handle` sort ahead of `forward_auth`; a route block
-   after a top-level forward_auth would execute FIRST and reach core ungated.
-   Inside one explicit `route` the written order is the execution order
-   (verified with `caddy adapt`: verify-proxy → delay route → core route).
+4. **`forward_auth` lives INSIDE the `route` block — for written-order
+   determinism, not as a bypass fix.** Caddy's directive order already sorts
+   `forward_auth` (middleware group) BEFORE `handle`/`route`/`reverse_proxy`;
+   verified empirically by adapting the same site without the route block —
+   the gate still compiled first. Wrapping the site in one explicit `route`
+   pins the evaluation order to the written order (verify-proxy → delay route
+   → core route, per `caddy adapt`), immune to directive-order-table changes
+   across Caddy versions.
 5. **`/verify` redirects unauthenticated NAVIGATIONS to the portal** (AC-2
    requires a 302 to the portal, not a bare 401). Navigation is detected by
    `X-Forwarded-Method` (Caddy's forward_auth subrequest always sets it):
