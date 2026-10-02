@@ -9,6 +9,25 @@ import {
   readRedeemFlag,
 } from "@/lib/redeem-gate";
 
+// Origin guard for the late-success redirect target (round-8 C-001). backto
+// survives mogh_ui's post-exchange sanitize (utils.js strips only
+// redeem_ready|totp|passkey), so a crafted link —
+// /login?backto=//evil.example&redeem_ready=true — would otherwise navigate
+// off-origin immediately after the victim logs in. Accept ONLY a local path:
+// "/" exactly, or "/" followed by a character that is neither "/"
+// (protocol-relative //host) nor "\" (WHATWG URL parsing folds "\" to "/" for
+// special schemes, so /\evil.example is protocol-relative too; the parser is
+// the spec, not a browser quirk). Anything else — absolute URLs,
+// control-character prefixes, empty — falls back to "/". Query strings on an
+// accepted path are fine: they stay on this origin.
+function safeLocalPath(raw: string | null): string {
+  // typeof guard FIRST: `raw === "/"` being false does not exclude null, so
+  // without it null flows into the regex call (tsc caught exactly that).
+  return typeof raw === "string" && (raw === "/" || /^\/[^/\\]/.test(raw))
+    ? raw
+    : "/";
+}
+
 export default function Login(props: {
   passkeyIsPending?: boolean;
   totpIsPending?: boolean;
@@ -23,7 +42,10 @@ export default function Login(props: {
   // router.tsx renders <Login> for the passkey/totp branch BEFORE
   // <BrowserRouter> mounts, where router-context hooks throw. Reading
   // location.search and redirecting via location.replace mirrors mogh_ui's
-  // own maybeNavigate, keeping this path identical to the in-form one.
+  // own maybeNavigate — but the target guard below deliberately DIVERGES:
+  // mogh_ui's maybeNavigate replaces whatever backto carries (upstream draft
+  // (f) in compose/oidc-dev/BASELINE.md), and this PR must not add another
+  // unguarded call site of a flaw it documents.
   useEffect(() => {
     const flag = readRedeemFlag();
     if (!flag) return;
@@ -57,7 +79,7 @@ export default function Login(props: {
       // redirect cannot loop — including across StrictMode's double effect.
       consumeRedeemFlag();
       const backto = new URLSearchParams(window.location.search).get("backto");
-      window.location.replace(backto ?? "/");
+      window.location.replace(safeLocalPath(backto));
     }
   }, []);
 
