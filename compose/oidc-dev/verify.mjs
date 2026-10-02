@@ -63,6 +63,57 @@ const POST_FIX = argv.includes("--post-fix");
 const SCEN = argv.find((a) => !a.startsWith("--")) ?? "success";
 
 // ---------------------------------------------------------------------------
+// Evidence binding (round-8 F-001): a run's PASS lines certify a code tree,
+// so the tree must be PINNED, not implied. Every run stamps HEAD into its
+// scenario banner + ndjson meta rows, and refuses to run with uncommitted
+// changes under the trees the suite asserts on (ui/src — the fix;
+// compose/oidc-dev — the harness itself), because a dirty tree makes the
+// stamped SHA a lie about what ran. BASELINE.md batch-2 certified a head two
+// fix-commits stale exactly because nothing enforced this. Escape hatch for
+// dev iterations: VERIFY_ALLOW_DIRTY=1 keeps the run going but stamps the
+// dirt count into the meta rows — evidence can be recorded dirty, never
+// mis-recorded clean.
+// ---------------------------------------------------------------------------
+const REPO_ROOT = path.join(HERE, "..", "..");
+const GIT_HEAD = (() => {
+  const r = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+  if (r.status !== 0) {
+    throw new Error(
+      `evidence binding: git rev-parse HEAD failed: ${r.stderr?.trim()}`,
+    );
+  }
+  return r.stdout.trim();
+})();
+const DIRTY_COUNT = (() => {
+  const r = spawnSync(
+    "git",
+    ["status", "--porcelain", "--", "ui/src", "compose/oidc-dev"],
+    { cwd: REPO_ROOT, encoding: "utf8" },
+  );
+  if (r.status !== 0) {
+    throw new Error(
+      `evidence binding: git status failed: ${r.stderr?.trim()}`,
+    );
+  }
+  const dirty = r.stdout.split("\n").filter((l) => l.trim());
+  if (dirty.length > 0 && !process.env.VERIFY_ALLOW_DIRTY) {
+    throw new Error(
+      `evidence binding (F-001): refusing to run — the asserted trees are dirty, so a stamped SHA would not certify what actually ran:\n` +
+        dirty.map((l) => `  ${l}`).join("\n") +
+        `\ncommit first (the run protocol in BASELINE.md is: commit -> build -> run -> record). ` +
+        `Dev iterations may set VERIFY_ALLOW_DIRTY=1 to proceed with the dirt stamped into the evidence.`,
+    );
+  }
+  return dirty.length;
+})();
+console.log(
+  `evidence: HEAD ${GIT_HEAD.slice(0, 12)}, asserted trees ${DIRTY_COUNT ? `DIRTY x${DIRTY_COUNT} (stamped)` : "clean"}`,
+);
+
+// ---------------------------------------------------------------------------
 // Access-log tailer. Baselines the offset AT PROCESS START (the file persists
 // across runs — a fresh process must never re-read prior runs' rows). Advances
 // only to the last complete line so a torn write is re-read next poll instead
@@ -732,15 +783,19 @@ SCENARIOS["m1-seeded"] = { delayMs: 1500, run: async ({ rows, log }) => {
       `exchange 200 observed (pending window closed; ts=${ex.ts.toFixed(3)})`,
       () => statusOf(ex) === 200,
     ),
+    // Check names state the MODE-TRUE expectation (round-8 F-003): the
+    // predicates invert under --post-fix, so a fixed name ("requests fire")
+    // read as its own assertion inverted when pasted into issues. The name
+    // now carries the expectation for the mode it runs in.
     check(
-      `stale-token requests fire during the redeem window (wire: auth+rejected in [drive start -> exchange 200]; observed ${staleCandidates.length}, statuses ${[...new Set(staleCandidates.map(statusOf))].join("/") || "-"})`,
+      `stale-token requests during the redeem window — expect ${POST_FIX ? "ZERO (fix defers provider reads)" : ">= 1 (pre-fix reproduction)"} (wire: auth+rejected in [drive start -> exchange 200]; observed ${staleCandidates.length}, statuses ${[...new Set(staleCandidates.map(statusOf))].join("/") || "-"})`,
       () => {
         if (POST_FIX) return staleCandidates.length === 0; // fix: provider-subtree reads deferred
         return staleCandidates.length >= 1;
       },
     ),
     check(
-      `stale token VALUE confirmed on those requests (fetch shim tail …${STALE_TAIL})`,
+      `stale token VALUE on those paths — expect ${POST_FIX ? "ABSENT" : "PRESENT"} (fetch shim tail …${STALE_TAIL})`,
       () => {
         if (POST_FIX) {
           shimLive();
@@ -851,6 +906,13 @@ SCENARIOS["exchange-error"] = { run: async ({ page, rows, log }) => {
   // 1) a full successful login (settles on the dashboard), then 2) replay
   // /?redeem_ready=true: the pending login state is ONE-SHOT, so the fired
   // exchange 401s (and burns one of the 5 auth-limiter attempts).
+  // Round-8 C-003: the leg-1 session DELIBERATELY survives the failed
+  // settlement (failure paths are store-neutral), so the post-fix end state
+  // is the APP rendered at "/" — RequireAuth sees the still-valid jwt — and
+  // post-settlement traffic is authenticated 200s, which the zero-residual
+  // predicate never counted. The old wipe-era expectation (final /login)
+  // was an artifact of the store having been emptied; the arms below pin
+  // the new contract: in-document convergence + session preservation.
   await waitForLog(
     (e) => reqUri(e).includes("ExchangeForJwt") && statusOf(e) === 200,
     30_000,
@@ -875,6 +937,17 @@ SCENARIOS["exchange-error"] = { run: async ({ page, rows, log }) => {
   const urlAtObserve = new URL(page.url());
   await sleep(60_000); // the zero-residual window itself — OBSERVE it (C-018)
   const residual = residualRows(log, settleSec, 60);
+  // Round-8 C-003: the leg-1 session must SURVIVE the failed settlement.
+  // Fail-closed against reintroducing the wipe: with the store emptied, no
+  // authenticated request can occur post-settlement (hasJwt gates every
+  // read), so zero auth'd /user rows = the wipe came back.
+  const preserved = log.filter(
+    (e) =>
+      reqUri(e) === "/user" &&
+      statusOf(e) === 200 &&
+      authPresent(e) &&
+      logSec(e) > settleSec,
+  );
   const lastLoader = rows
     .filter((r) => r.kind === "loader" && r.ts_ms >= replayGotoMs)
     .at(-1);
@@ -916,10 +989,13 @@ SCENARIOS["exchange-error"] = { run: async ({ page, rows, log }) => {
       { preFixOnly: true },
     ),
     check(
-      `post-fix: in-document convergence to /login (final ${finalUrl.pathname}; document loads for the replay: ${replayDocRows.length})`,
+      `post-fix: in-document convergence, session preserved (final ${finalUrl.pathname}; document loads for the replay: ${replayDocRows.length})`,
       () =>
-        finalUrl.pathname.startsWith("/login") &&
-        replayDocRows.length === 1, // no reload — the gate dropped in-document
+        // no reload — the gate dropped in-document. The load COUNT is the
+        // in-document signal; the pathname pins the store-neutral end state
+        // (the surviving leg-1 session renders the app at "/", where the
+        // wipe-era run bounced to /login with an emptied store).
+        replayDocRows.length === 1 && finalUrl.pathname === "/",
       { fixDependent: true },
     ),
     check(
@@ -927,9 +1003,14 @@ SCENARIOS["exchange-error"] = { run: async ({ page, rows, log }) => {
       () => residual.count === 0 && residual.wsFails === 0,
       { fixDependent: true },
     ),
+    check(
+      `post-fix: leg-1 session preserved through the failed settlement (authenticated /user 200 after ts=${settleSec.toFixed(3)}; observed ${preserved.length})`,
+      () => preserved.length >= 1,
+      { fixDependent: true },
+    ),
   ];
   console.log(
-    `    ↳ observation (this phase): ${residual.count} unauth-or-401/403-or-auth-5xx rows, ${residual.wsFails} failed ws handshakes in the 60s window`,
+    `    ↳ observation (this phase): ${residual.count} unauth-or-401/403-or-auth-5xx rows, ${residual.wsFails} failed ws handshakes, ${preserved.length} authenticated /user 200 (leg-1 session preserved) in the 60s window`,
   );
   return { checks };
   },
@@ -1063,9 +1144,19 @@ async function runScenario(name) {
     );
   }
   const delayMs = def.delayMs ?? null;
-  console.log(`\n=== scenario ${name}${POST_FIX ? " (--post-fix)" : ""} ===`);
+  console.log(
+    `\n=== scenario ${name}${POST_FIX ? " (--post-fix)" : ""} (head ${GIT_HEAD.slice(0, 12)}${DIRTY_COUNT ? `, DIRTY x${DIRTY_COUNT}` : ""}) ===`,
+  );
   const rows = [
-    { kind: "meta", scenario: name, postFix: POST_FIX, delayMs, startedAt: new Date().toISOString() },
+    {
+      kind: "meta",
+      scenario: name,
+      postFix: POST_FIX,
+      delayMs,
+      head: GIT_HEAD,
+      dirty: DIRTY_COUNT,
+      startedAt: new Date().toISOString(),
+    },
   ];
   let browser;
   let pass = false;
