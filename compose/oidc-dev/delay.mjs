@@ -15,6 +15,11 @@ http
     if (req.url?.startsWith("/auth/login/") && DELAY > 0) {
       console.log(`${new Date().toISOString()} delay ${DELAY}ms ${req.method} ${req.url}`);
       await new Promise((r) => setTimeout(r, DELAY)); // the ONLY working delay
+      // Client gave up during the await (watchdog fired / Playwright timeout):
+      // stop here instead of dispatching to core — a dead-request dispatch
+      // still consumes one of core's 5 auth rate-limit attempts and would
+      // pollute exactly the exchange-counter metric the harness measures.
+      if (res.destroyed) return;
     }
     const upstream = http.request(
       {

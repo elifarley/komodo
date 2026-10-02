@@ -39,6 +39,13 @@ portal.oidctest.localhost:443, portal.oidctest.localhost:8443 {
 # Komodo behind forward_auth — mirrors the issue reporter's shape: the WHOLE
 # vhost is gated (login page, callback, API, static assets). Gating fewer
 # paths would remove the M3 bounce the harness exists to reproduce.
+#
+# The :8443 listener exists for SYMMETRY only: nothing inside the compose
+# network dials komodo.oidctest.localhost:8443 today (core dials only the
+# portal, via its issuer URL; the delay sidecar dials core:9120 directly).
+# Kept so both harness hostnames resolve and dial identically for any future
+# in-network client (e.g. a Playwright driver container), matching the portal
+# vhost's dual-port necessity.
 komodo.oidctest.localhost:443, komodo.oidctest.localhost:8443 {
 	tls internal
 	# JSON access log incl. request headers — assertion source for wire
@@ -51,10 +58,12 @@ komodo.oidctest.localhost:443, komodo.oidctest.localhost:8443 {
 		}
 		format json
 	}
-	# Everything inside one explicit `route` block so the evaluation order is
-	# the written order: the auth gate runs BEFORE any proxying. Outside a
-	# route block, Caddy's directive-order table puts `route`/`handle` ahead
-	# of `forward_auth`, which would let requests reach core ungated.
+	# Everything inside one explicit `route` block: Caddy would sort
+	# `forward_auth` before the proxying anyway (middleware group precedes
+	# handle/route — verified empirically: adapting the same site WITHOUT the
+	# route block still compiles the gate first), so this is not a bypass
+	# fix — it pins the evaluation order to the WRITTEN order, immune to
+	# directive-order-table drift across Caddy versions.
 	route {
 		forward_auth oidc-mock:3344 {
 			uri /verify
