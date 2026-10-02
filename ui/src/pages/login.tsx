@@ -37,6 +37,12 @@ function safeLocalPath(raw: string | null): string {
     : "/";
 }
 
+// Per-document latch for the silent-drop toast: with the drop flag no longer
+// consumed on read, the effect re-runs on every /login mount within the
+// flag's TTL (and StrictMode's dev double-mount re-runs it too); one toast
+// per document, not one per mount.
+let dropNoticeShown = false;
+
 export default function Login(props: {
   passkeyIsPending?: boolean;
   totpIsPending?: boolean;
@@ -59,17 +65,30 @@ export default function Login(props: {
     const flag = readRedeemFlag();
     if (!flag) return;
     if (flag.phase === "drop") {
-      // Clear-on-read: the silent-drop message must not replay on later visits.
-      consumeRedeemFlag();
-      notifications.show({
-        title: "Login succeeded but the session could not be stored",
-        message: "Please log in again.",
-        color: "red",
-        // Mantine defaults to autoClose: 4000 — a silent-failure notice that
-        // vanishes by ~T+5s would defeat the silent-drop goal (non-silence) and
-        // race verify.mjs's fix-dependent probe (~T+8s). Must-act toasts stay.
-        autoClose: false,
-      });
+      // NO clear-on-read (batch-3 lesson): this document may be the DOOMED
+      // pre-reload one — mogh's sanitize reload was already initiated when
+      // the settlement wrote the flag, and this page can mount (RequireAuth
+      // bounces a session-less settled document to /login) and consume the
+      // flag milliseconds before the unload commits. Batch 3's first
+      // m2-forced run failed exactly here: the dying document consumed the
+      // drop signal, and the document the user actually landed in found
+      // nothing. The ok branch still consumes BEFORE navigating, because
+      // THAT redirect would otherwise loop; the drop path has no redirect to
+      // loop, so TTL expiry is the cleanup. Freshness gates the toast so a
+      // stale flag cannot replay it on later /login visits.
+      if (!flagFresh(flag)) return;
+      if (!dropNoticeShown) {
+        dropNoticeShown = true;
+        notifications.show({
+          title: "Login succeeded but the session could not be stored",
+          message: "Please log in again.",
+          color: "red",
+          // Mantine defaults to autoClose: 4000 — a silent-failure notice that
+          // vanishes by ~T+5s would defeat the silent-drop goal (non-silence) and
+          // race verify.mjs's fix-dependent probe (~T+8s). Must-act toasts stay.
+          autoClose: false,
+        });
+      }
       return;
     }
     if (!flagFresh(flag)) return; // stale: ignored (TTL expiry); lingers harmlessly until tab close
