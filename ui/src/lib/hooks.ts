@@ -67,7 +67,14 @@ function composeEnabled<Q>(
   callerEnabled: boolean | ((query: Q) => boolean) | undefined,
 ): boolean | ((query: Q) => boolean) {
   return typeof callerEnabled === "function"
-    ? (q) => hasJwt && callerEnabled(q) !== false
+    ? // Falsy-coerce the function form's result, matching react-query's own
+      // resolveEnabled: a hand-written predicate like `opt?.flag && ...`
+      // returns undefined for "no", and `!== false` enabled it where RQ
+      // alone would disable (round-9 C-004, latent — TS pins the return to
+      // boolean today; no current caller passes a function, round-9 census).
+      // The non-function branch keeps `!== false` because RQ treats an
+      // ABSENT enabled as default-enabled.
+      (q) => hasJwt && !!callerEnabled(q)
     : hasJwt && callerEnabled !== false;
 }
 
