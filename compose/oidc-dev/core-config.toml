@@ -2,10 +2,11 @@
 # This file is the SINGLE source of truth for the OIDC toggles: komodo env
 # vars override file config (bin/core/src/config.rs:211-213), so they must
 # not also be set as KOMODO_* env in the compose file. oidc_auto_redirect
-# stays pinned false per spec §6 — M3/M6 discrimination.
+# stays pinned false so the harness cannot produce the M3/M6 auto-redirect
+# loops.
 #
-# The :8443 on every browser-facing origin is a harness-host REALITY (deviation
-# from the plan draft): rootless podman cannot publish ports < 1024 and the
+# The :8443 on every browser-facing origin is a harness-host REALITY (not in
+# the original draft): rootless podman cannot publish ports < 1024 and the
 # host's system Caddy already owns 80. See README "Deviations" for the full
 # port story.
 host = "https://komodo.oidctest.localhost:8443"

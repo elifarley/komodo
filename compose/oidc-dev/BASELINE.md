@@ -5,12 +5,12 @@
 - **Suite commit / HEAD:** `fa53da3c0` — `compose/oidc-dev/verify.mjs` exactly as
   committed there (no local edits); branch `komodo-oidc-login-jwt-redeem-race-fix-1665`
 - **UI under test:** **stock v2.3.3** — last commit touching `ui/` is the `v2.3.3`
-  tag commit itself (`780ac68b9`); the branch carries no §7 code yet (fix
-  implementation not started). Core image = digest-pinned `ghcr.io/moghtech/komodo-core@sha256:bca73d0e…`
+  tag commit itself (`780ac68b9`); the branch carries none of the fix's code yet
+  (fix implementation not started). Core image = digest-pinned `ghcr.io/moghtech/komodo-core@sha256:bca73d0e…`
   (tag `2.3.3`).
 - **Harness origin:** podman shim (`DOCKER_HOST=unix:///run/user/1000/podman/podman.sock`
   + standalone `docker-compose`); all browser-facing origins carry `:8443`
-  (rootless podman cannot publish privileged ports — README §Deviations 1). Mongo 8,
+  (rootless podman cannot publish privileged ports — README Deviations 1). Mongo 8,
   core (branch UI build), oidc-mock (`oidc-provider@9.12.2`), Caddy 2.11, delay sidecar.
 - **Method:** all 7 scenarios re-run **fresh** for this baseline (the verify suite's
   cached `out/*.ndjson` moved aside before the first run — none of the excerpts below is a
@@ -41,7 +41,7 @@
 | `m1-seeded` | PASS (4/4) | **M1 REPRODUCED** — stale-token reads fire during pending |
 | `m2-forced` | PASS (4/4 +1 SKIP) | **M2 REPRODUCED** — silent `add_and_change` drop |
 | `exchange-error` | PASS (3/3 +2 SKIP) | **M5 REPRODUCED** — 401 → eternal spinner |
-| `hung` | PASS (3/3 +3 SKIP) | slow success, NOT an eternal spinner (see §hung) |
+| `hung` | PASS (3/3 +3 SKIP) | slow success, NOT an eternal spinner (see the `hung` section below) |
 | `isolation` | PASS (3/3) | regression guard — gate already isolated pre-fix |
 
 ---
@@ -50,7 +50,7 @@
 
 Stock happy path is healthy: the exchange 200 lands, the very next app request is
 authenticated, the ws connects, and the dashboard renders. The window-bound guards
-(§6) observe **zero** unauth/401/403/auth-5xx rows — nothing else in the login
+observe **zero** unauth/401/403/auth-5xx rows — nothing else in the login
 cascade is burning the limiter.
 
 ```
@@ -90,7 +90,7 @@ value); the fetch-shim rows prove the **value** — those two requests carried t
 seeded stale token, not the fresh one. The same shim shows the stale token is also
 attached to the `ExchangeForJwt` call itself (ts 1790910697477), corroborated on the
 wire by that row's own `auth:true` — mogh_ui attaches
-whichever jwt is current to *all* API calls, which is why §6's residual unit counts
+whichever jwt is current to *all* API calls, which is why the residual-count unit counts
 auth-bearing 5xx, not just 401/403. After settlement the pointer moves off the seed:
 
 ```
@@ -99,20 +99,20 @@ auth-bearing 5xx, not just 401/403. After settlement the pointer moves off the s
 ```
 
 **Rejection code is 500, not 401.** Core answers the bad-signature jwt with 500 on
-`/user` and `/read/GetCoreInfo` on this build. The spec's original "the server 401s
-it" assumption (§6/§8) was already amended to "rejections (observed 500s)"; the
+`/user` and `/read/GetCoreInfo` on this build. The original "the server 401s
+it" design assumption was already amended to "rejections (observed 500s)"; the
 suite's predicate deliberately accepts 401/403/5xx and prints the observed statuses
 so the discriminating signal stays *stale-token-authenticated request inside the
 window*, not the exact code.
 
-### M1 vs §7.5's design premise — CONFIRMED
+### M1 vs the read-deferral premise — CONFIRMED
 
-§7.5 defers the always-mounted provider-subtree reads (`useUser` poll, `GetCoreInfo`,
+The fix defers the always-mounted provider-subtree reads (`useUser` poll, `GetCoreInfo`,
 connect effect) behind `enabled: gateOpen && hasJwt` for exactly this surface. The
 observation matches the premise precisely: **stale-token reads fire during the
 pending window** (`[drive start → exchange 200]`), from `WebsocketProvider`'s
 mounted queries, with errors that would latch (`retry: false`). Nothing in the fresh
-evidence contradicts §7.5; the deferral targets what actually happens.
+evidence contradicts the deferral premise; the deferral targets what actually happens.
 
 ## m2-forced — **M2 REPRODUCED**
 
@@ -164,12 +164,12 @@ the exchange while the spinner spins.
 
 ## hung — slow success, NOT an eternal spinner
 
-`DELAY_AUTH_MS=15000` (past §7.1's 12 s watchdog). Pre-fix there is **no watchdog**,
+`DELAY_AUTH_MS=15000` (past the fix's 12 s watchdog). Pre-fix there is **no watchdog**,
 so the LoadingScreen simply holds for the entire delay and the late 200 then
-converges normally — the §8 row-4 pre-fix cell's "eternal spinner" is **refuted for
-finite delays**; the eternal arm is only reachable by an exchange that never
-settles, which a finite delay sidecar cannot produce (that arm belongs to the
-post-fix watchdog run). The README's §8-row→scenario map already carries the
+converges normally — the scenario map's pre-fix "eternal spinner" cell for `hung` is
+**refuted for finite delays**; the eternal arm is only reachable by an exchange that
+never settles, which a finite delay sidecar cannot produce (that arm belongs to the
+post-fix watchdog run). The README's row→scenario map already carries the
 corrected pre-fix cell ("round-trip ≥ 15000 ms; LoadingScreen up with no OBSERVED
 gap until the late 200 … slow-success reload documented") — BASELINE does not
 restate it.
@@ -194,7 +194,7 @@ OBSERVED gap").
 A failing **non-redeem** execute (`POST /execute/StartDeployment` → 500) fired with
 the stored jwt does not flip the gate, reload, or raise the LoadingScreen — stock
 v2.3.3 already isolates mutations from the redeem path. Pre-fix PASS is expected
-(README §Deviations 6); the row exists to catch an unfiltered §7.1 MutationCache
+(README Deviations 6); the row exists to catch an unfiltered redeem-gate MutationCache
 subscription in the fix implementation.
 
 ```
@@ -205,16 +205,16 @@ check: no LoadingScreen flip within 2s (flip observed: false) PASS
 
 ---
 
-## Mechanism attribution (spec §5)
+## Mechanism attribution
 
 | # | Mechanism | Verdict | Evidence |
 |---|---|---|---|
 | M1 | Stale-token query fire | **REPRODUCED** | `m1-seeded`: stale-value `/user` + `/read/GetCoreInfo` (fetch-shim tail `…stale-signature`) hit core during pending, rejected 500, 1.53 s before the exchange 200 |
 | M2 | Silent `add_and_change` drop | **REPRODUCED** | `m2-forced`: upstream 200, zero TOKENS transitions (all `null`), sub-less jwt absent from the store, reload → login chunk + `GetLoginOptions`, no signal |
 | M3 | Forward-auth bounce → reload loop | **NOT REPRODUCED** (mock limitation — see below) | `success`/`exchange-error`: the post-exchange and post-replay reloads return 200 straight through the gate; zero `/verify` 503/401 bounces in any ndjson |
-| M4 | Latched errors never re-run | **NOT INDEPENDENTLY REPRODUCED** | No dedicated §8 row by design; per §5 it is covered by the success-path remount, and `success`'s post-reload authed reads + dashboard + ws assert the recovered state (no residual latched state observed) |
+| M4 | Latched errors never re-run | **NOT INDEPENDENTLY REPRODUCED** | No dedicated scenario row by design; per the mechanism analysis it is covered by the success-path remount, and `success`'s post-reload authed reads + dashboard + ws assert the recovered state (no residual latched state observed) |
 | M5 | Exchange failure → eternal spinner | **REPRODUCED** | `exchange-error`: replayed exchange 401 → no navigation, last loader state `on` indefinitely |
-| M6 | Core auto-redirect loop | **OUT BY CONSTRUCTION** | `core-config.toml` pins `oidc_auto_redirect = false`; per §6 the harness cannot produce it, and no loop signature appeared |
+| M6 | Core auto-redirect loop | **OUT BY CONSTRUCTION** | `core-config.toml` pins `oidc_auto_redirect = false`, so the harness cannot produce it, and no loop signature appeared |
 
 ### M3 non-reproduction — what it does and does not mean
 
@@ -224,7 +224,7 @@ never bounces the post-exchange sanitize reload: every reload of
 a portal↔komodo loop. This is a **mock limitation, not an exoneration**: the
 reporter's production gateway (Authelia-class) may consume/invalidate its session at
 the redemption instant, which is exactly the M3 trigger this mock cannot express.
-M3 therefore stays **live for the upstream report** (spec §7.4 records the
+M3 therefore stays **live for the upstream report** (the report records the
 contingency: no komodo-side fix under the pinned dependency), and any loop observed
 in a later run must be re-checked against core logs (`invalid peer certificate` /
 discovery 500s are the known non-M3 confounders — README's debugging note) before
@@ -233,10 +233,10 @@ being attributed.
 ## Gate decision
 
 **PROCEED.** Three of the six candidate mechanisms reproduce with wire-level
-evidence (M1, M2, M5), matching the spec's premise that the fix must cover all
-three regardless of which reproduces first (§5). The environment rows (`success`,
+evidence (M1, M2, M5), matching the design premise that the fix must cover all
+three regardless of which reproduces first (see the attribution table above). The environment rows (`success`,
 `latency`, `isolation`) are green pre-fix, so the post-fix runs have a clean
-regression baseline, and `hung`'s pre-fix reality is documented for the §8 row-4
+regression baseline, and `hung`'s pre-fix reality is documented for the hung row's
 comparison.
 
 ---
@@ -271,8 +271,8 @@ assertions SKIPped by design (`reportChecks`).
   (fix-dependent checks ENFORCED; pre-fix mechanism assertions SKIPped by
   design).
 - **UI under test (batch 1):** the branch fix with pre-arm
-  (`49802408e…641f966da`, spec §7.1 incl. the module-scope pre-arm addendum,
-  §7.2–§7.7). Core image `localhost/komodo-oidc-dev-core` id `28f89a5be8af`,
+  (`49802408e…641f966da`: gate lifecycle incl. the module-scope pre-arm,
+  settlement listener, evidence flag, late-success redirect). Core image `localhost/komodo-oidc-dev-core` id `28f89a5be8af`,
   built from HEAD `641f966da`; the running core container was verified to run
   that image (`docker inspect` image sha match) before the batch. Batch 0's
   image (`5190032c1dbe`, HEAD `9d9a38a88`) had its served
@@ -293,13 +293,13 @@ asserted mechanisms do not touch the pre-arm window the pre-arm build changed
 |---|---|---|---|
 | `success` | PASS 7/7 | **PASS 7/7** | n/a — regression guard holds: window total 0, sliding 0, ws 101 + on_login, dashboard `/` |
 | `latency` † | PASS 8/8 | **PASS 8/8** | n/a — regression guard holds: round-trip 2030 ms ≥ 2000 ms |
-| `m1-seeded` | PASS 4/4 (M1 REPRODUCED) | **PASS 4/4** (was **FAIL 2/4** on batch 0) | §7.5 zero-stale-reads arm: **observed 0** stale reads; value-absence arm PASS (scoped); fresh-pointer PASS |
+| `m1-seeded` | PASS 4/4 (M1 REPRODUCED) | **PASS 4/4** (was **FAIL 2/4** on batch 0) | zero-stale-reads arm (read deferral): **observed 0** stale reads; value-absence arm PASS (scoped); fresh-pointer PASS |
 | `m2-forced` † | PASS 4/4 +1 SKIP (M2 REPRODUCED) | **PASS 5/5** | drop flag surfaced in-document on the login page — M2 no longer silent |
 | `exchange-error` † | PASS 3/3 +2 SKIP (M5 REPRODUCED) | **PASS 3/3** (2 pre-fix arms SKIP) | converged failure in-document (exactly 1 document load, final `/login`) + zero-residual 60 s (0 bad rows, 0 failed ws) |
-| `hung` | PASS 3/3 +3 SKIP (slow success) | **PASS 5/5** (1 pre-fix arm SKIP) | watchdog dropped the gate 12.1 s after landing — 3.0 s BEFORE the late 200; zero-residual 60 s (0/0); §7.7 recovered the late success → landed `/` |
-| `isolation` | PASS 3/3 | **PASS 3/3** | n/a — §7.1's filtered subscription introduced no gate flip (regression guard holds) |
+| `hung` | PASS 3/3 +3 SKIP (slow success) | **PASS 5/5** (1 pre-fix arm SKIP) | watchdog dropped the gate 12.1 s after landing — 3.0 s BEFORE the late 200; zero-residual 60 s (0/0); the late-success redirect recovered the login → landed `/` |
+| `isolation` | PASS 3/3 | **PASS 3/3** | n/a — the gate's filtered subscription introduced no gate flip (regression guard holds) |
 
-**7/7 green — the spec §11 "full suite green post-fix" criterion is met.**
+**7/7 green — the "full suite green post-fix" acceptance criterion is met.**
 
 † reasoning (why the pre-pre-arm run stands for these rows): the pre-arm
 change (`641f966da`) alters exactly one thing — WHEN the gate closes on a
@@ -310,7 +310,7 @@ round-trip assertion (`success` re-ran green on the final build);
 `m2-forced` asserts the drop DETECTION at settlement (settlement listener +
 login-page toast — code paths downstream of the gate) plus the still-true
 silent-drop arms; `exchange-error` asserts the settled-failed CONVERGENCE
-(the §7.2 effect) — the same settlement path `hung`'s watchdog convergence
+(in-document, no reload) — the same settlement path `hung`'s watchdog convergence
 exercises, and `hung` re-ran green on the final build. Batch 0's `m1-seeded`
 FAIL, by contrast, was precisely a pre-arm-window assertion — re-run required,
 and done.
@@ -328,7 +328,7 @@ sub-less token; upstream still 200), and the fix-dependent arm PASSED:
 ```
 PASS exchanged (sub-less) jwt never lands in the token store (silent drop)      (pre-fix arm, still true)
 PASS silent drop path: reload lands on /login (observed /login)                 (pre-fix arm, still true)
-PASS post-fix: drop flag surfaced in-document on the login page                 (§7.3/§7.7 arm — NEW)
+PASS post-fix: drop flag surfaced in-document on the login page                 (evidence-flag + late-success-redirect arm — NEW)
 ```
 
 The drop is detected by the settlement listener (`initRedeemGate`: success
@@ -355,7 +355,7 @@ PASS post-fix: in-document convergence to /login (final /login; document loads f
 PASS zero-residual 60s window (unauth-or-401/403-or-auth-5xx app rows: 0; failed ws handshakes: 0)
 ```
 
-The settled-failed path (§7.2) converged the SAME document to `/login` — the
+The settled-failed path converged the SAME document to `/login` — the
 replay produced **exactly one** document load (no sanitize reload, no
 retry-navigation), the URL/params were stripped via `history.replaceState`, and
 the "Login didn't complete" notification carried the signal. Over the
@@ -364,7 +364,7 @@ failed ws handshakes — nothing re-fires the exchange, so the limiter budget is
 no longer burning (pre-fix, a user-stuck spinner plus any reload loop would
 exhaust the 5-per-15 s budget into 429s; draft issue (d) below).
 
-## hung — watchdog converges, then the late success recovers (§7.1 + §7.7 closed)
+## hung — watchdog converges, then the late success recovers (watchdog + late-success redirect closed)
 
 `DELAY_AUTH_MS=15000`, past the 12 s watchdog. Pre-fix reality: no
 watchdog, one continuous spinner for 15.6 s, then the late 200 converged
@@ -379,25 +379,25 @@ LOADER 1790920382486  on     (doc+123 ms)   ← pre-armed pending: LoadingScreen
 LOADER 1790920394468  off    (doc+12105 ms) ← watchdog dropped the gate — 3040 ms BEFORE the late 200
 req    1790920397508  POST /auth/login/ExchangeForJwt 200 (round-trip 15.043 s)
 TOKENS 1790920397511  {"current":"6abf067c…"}   ← the LATE 200 still stored its token
-LOADER 1790920397779 on / 1790920398080 off    ← §7.7 redirect transit
-final URL: /  (§7.7 late-success redirect: login page found the fresh flag + jwt and sent the user to /)
+LOADER 1790920397779 on / 1790920398080 off    ← late-success redirect transit
+final URL: /  (late-success redirect: login page found the fresh flag + jwt and sent the user to /)
 PASS post-fix: watchdog dropped the gate BEFORE the late 200 (loader-off observed pre-settlement)
 PASS post-fix: zero-residual 60s window after the watchdog settlement (0; failed ws: 0)
-PASS post-fix: watchdog converges (gate drops -> /login with §7.7 late-success redirect)
+PASS post-fix: watchdog converges (gate drops -> /login, then the late-success redirect recovers)
 ```
 
-This is the full §7.1→§7.7 sequence working end-to-end, now with the pre-arm
+This is the full redeem-gate sequence working end-to-end, now with the pre-arm
 engaged: the LoadingScreen is up from doc+123 ms (module-scope pre-arm), the
 watchdog fired at doc+12105 ms and settled-failed the gate, the user landed on
 `/login` instead of spinning, and when the exchange finally returned 200 three
-seconds later, mogh_ui's own handler re-stored the token and the one-shot §7.7
+seconds later, mogh_ui's own handler re-stored the token and the one-shot late-success
 redirect (fresh `ok` flag + jwt present in the store →
 `location.replace(backto ?? "/")`) recovered the login. Zero residual over the
 60 s window. (Batch 0 had already passed this row on the pre-pre-arm build —
 same three arms; the watchdog path was never pre-arm-sensitive, since the
 mutation's own settlement handles both.)
 
-## m1-seeded — §7.5 read deferral: **FAIL on batch 0 → PASS on the final build** (§11 m1 criterion MET)
+## m1-seeded — read deferral: **FAIL on batch 0 → PASS on the final build** (m1 criterion MET)
 
 ### Batch 0 — the failure that found the defect (image `5190032c1dbe`, HEAD `9d9a38a88`)
 
@@ -487,8 +487,8 @@ The ndjson shows the pre-arm doing exactly what the root cause demanded: the
 redeem document loads at `…315199`, the exchange dispatch fetch goes out at
 `…315295` (doc+96 ms) — and **the exchange itself is the ONLY fetch in
 [doc load → 200]**; the LoadingScreen row lands doc+117 ms; zero stale-tail
-fetches to `/user|/read` anywhere before the 200. The §8-map arm ("zero such
-rows") holds on the final build; the spec §11 m1 criterion is met.
+fetches to `/user|/read` anywhere before the 200. The scenario-map arm ("zero such
+rows") holds on the final build; the m1 acceptance criterion is met.
 
 ---
 
@@ -613,14 +613,14 @@ versions stock v2.3.3 resolves).
 express this):**
 
 - The harness mock's portal session **survives** token redemption, so every
-  post-exchange navigation (mogh_ui's sanitize reload on success; komodo's §7.7
-  redirect; the failure-path convergence) re-enters the komodo vhost through the
+  post-exchange navigation (mogh_ui's sanitize reload on success; komodo's
+  late-success redirect; the failure-path convergence) re-enters the komodo vhost through the
   gate and returns 200 — M3's bounce/loop (forward-auth session consumed at the
   redemption instant → the post-exchange reload 302s to the portal → …) was
   **not reproducible** and no `/verify` 401/503 storm appears in any ndjson
   (BASELINE "M3 non-reproduction" above).
 - Post-fix there are up to TWO navigations after a successful exchange (sanitize
-  reload; plus the §7.7 redirect only when the watchdog path was taken) and ONE
+  reload; plus the late-success redirect only when the watchdog path was taken) and ONE
   in-document convergence on failure (no reload). If a production Authelia-class
   gateway invalidates its session at the redemption instant, which navigation
   bounces first, and does the loop re-arm the redeem (the URL still carrying

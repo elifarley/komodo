@@ -1,4 +1,4 @@
-# Branch UI served by the digest-pinned core image (spec §6.3).
+# Branch UI served by the digest-pinned core image (production parity).
 # Stage 1 mirrors ui/Dockerfile's builder stage; stage 2 is production core.
 # CORE_IMAGE must be a full ref with digest; it is set in
 # compose/oidc-dev/.env (gitignored) — see README step 1. If this ARG is
