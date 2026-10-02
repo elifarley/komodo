@@ -68,6 +68,20 @@ services:
       - ./oidc-dev/core-config.toml:/config/config.toml:ro
       - oidc-dev-repo-cache:/config/repo-cache
 
+  # The OIDC provider for the harness. Default in-memory adapter (sessions do
+  # not survive restarts — fine for a test harness). No mongo dependency: it
+  # keeps no durable state. Port 3344 is published for host-side debugging;
+  # Task 3's Caddy talks to it over the compose network as http://oidc-mock:3344.
+  oidc-mock:
+    build:
+      context: ./oidc-dev
+      dockerfile: oidc-mock/Dockerfile
+    restart: unless-stopped
+    environment:
+      MOCK_ISSUER: https://portal.oidctest.localhost
+    ports:
+      - "3344:3344"
+
 volumes:
   oidc-dev-mongo:
   oidc-dev-config:
