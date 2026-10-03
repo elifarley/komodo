@@ -309,7 +309,9 @@ rows are historical only. **Round-8 batch 3 re-ran ALL SEVEN at the PR head
 (canonical; see the round-8 batch section below) after F-001 showed batch 2
 predated three detector commits. Round-9 batch 4 added `m2-seeded` (the
 classifier's previously blind population) and re-ran ALL EIGHT at the PR
-head (canonical; see the round-9 batch section).**
+head (canonical; see the round-9 batch section). Round-10 batch 5
+re-certified 8/8 at the PR head after the marker scrub and the login-page
+`backto` input sanitize (see the round-10 batch section).**
 
 | Scenario | Pre-fix | Post-fix (final build) | Fix-dependent arms (`--post-fix`) |
 |---|---|---|---|
@@ -507,6 +509,51 @@ PASS pre-existing (seeded) session preserved through the silent drop (store neut
 
 **8/8 green — the suite now exercises the population its own classifier
 used to misclassify.**
+
+## Round-10 batch — 8/8 at the PR head; the shipped source stops speaking review dialect
+
+Round-10 review found two majors about readers rather than runtime, three
+minors:
+
+- **C-001:** review-round markers (`round-8 C-003`, `round-9 C-004`,
+  `batch-3 lesson`, `upstream draft (b)`) had accreted into shipped
+  `ui/src` comments — ids that resolve only through this document, and
+  collide across rounds (round-8 C-003 ≠ round-9 C-003; a grep lands 50/50
+  on the wrong rationale). An earlier scrub commit had replaced spec
+  anchors but missed the hyphenated spelling class — the exact miss its own
+  commit message warned about. Swept to zero (`grep -rnE
+  'round-[0-9]|batch-[0-9]|C-00[0-9]|F-00[0-9]|draft \([a-z]\)' ui/src`);
+  the WHY content stays, the process pointers are gone.
+- **C-002 (live on the shipped app):** `safeLocalPath` guarded this PR's
+  own redirect while the SAME parameter flowed unvalidated through
+  mogh_ui's `maybeNavigate` after a local/passkey/totp login — the
+  documented draft-(f) flaw, live on the page komodo owns. Fixed at the
+  input: `Login`'s mount effect rewrites a hostile `backto` out of the URL
+  (`history.replaceState`, no navigation) before anything reads it, so
+  every consumer — mogh_ui's included — navigates only on a value that
+  survived the guard.
+- Minors: oidc-mock's baked issuer default now carries `:8443`, matching
+  the harness's own byte-identical-issuer rule (C-003); hung's self-derived
+  ">= 20s post-callback" check deleted — the oracle was the scenario's own
+  unconditional sleep, and the window it gestured at is measured by the
+  zero-residual check (C-004; hung is 5/5 + 1 pre-fix SKIP); the runner's
+  evidence write is guarded and ordered before the browser/knob cleanup, so
+  a write throw can no longer leak Chromium or leave `DELAY_AUTH_MS` set
+  (C-005).
+
+### Batch 5 (canonical — HEAD `9bf2f4a26`, image `c30be6e0dc43`, ~21:20–21:27 -03:00)
+
+`SCENARIO … PASS` ×8 (`success` 7/7, `latency` 8/8, `m1-seeded` 4/4,
+`m2-forced` 5/5, `m2-seeded` 7/7, `exchange-error` 5/5 + 2 pre-fix SKIPs,
+`hung` 5/5 + 1 pre-fix SKIP, `isolation` 3/3), `ALL SCENARIOS PASS`, exit
+0; all eight ndjson meta rows stamped `head=9bf2f4a26fd7, dirty=0`; 44
+checks green. Bundle identity verified BYTE-LEVEL (the container's
+image-ID field proved an unreliable witness under podman — it reported an
+ID matching neither the tag nor the prior build): the served
+`login-*.js` md5 equals the host `yarn build` output at this head — the
+same served-hash technique batch 0 used.
+
+**8/8 green.**
 
 ## m2-forced — the silent drop now surfaces (M2 closed at the komodo layer)
 
@@ -902,7 +949,10 @@ FAIL, root-caused to the doomed-document consume race, fixed in
 on a wrong ts-model predicate; root-caused by an instrumented diagnostic and
 fixed in `1f0f2673b0bb`), **4b canonical ~18:29–18:43 -03:00 (HEAD
 `1f0f2673b0bb`, image `925a844ef0a0`, 8/8, every ndjson meta row stamped
-`head=1f0f2673b0bb, dirty=0`)**. Harness per README "Run"
+`head=1f0f2673b0bb, dirty=0`)**; round-10 batch 5 canonical ~21:20–21:27
+-03:00 (HEAD `9bf2f4a26`, image `c30be6e0dc43`, 8/8, every ndjson meta row
+stamped `head=9bf2f4a26fd7, dirty=0`; served-bundle identity verified by
+md5 against the host build). Harness per README "Run"
 (podman shim, `compose/oidc-dev.compose.yaml`, `oidc-provider@9.12.2`); raw
 ndjson evidence in gitignored `compose/oidc-dev/out/` (batch 3b files are
 the surviving evidence for all seven rows); run stdout
