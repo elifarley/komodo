@@ -1211,10 +1211,6 @@ SCENARIOS.hung = { delayMs: 15_000, run: async ({ context, page, rows, log, dela
       { fixDependent: true },
     ),
     check(
-      "drive observed >= 20s post-callback before verdict",
-      () => Date.now() - exMs >= 20_000, // guaranteed by the 60s residual window above
-    ),
-    check(
       `post-fix: zero-residual 60s window after the watchdog settlement (unauth-or-401/403-or-auth-5xx: ${residual.count}; failed ws rows (flushed at close): ${residual.wsFails})`,
       () => residual.count === 0 && residual.wsFails === 0,
       { fixDependent: true },
@@ -1366,12 +1362,24 @@ async function runScenario(name) {
         duration_s: e.duration,
       });
     }
-    mkdirSync(OUT_DIR, { recursive: true });
-    writeFileSync(
-      path.join(OUT_DIR, `${name}.ndjson`),
-      rows.map((r) => JSON.stringify(r)).join("\n") + "\n",
-    );
-    console.log(`ndjson: ${path.join(OUT_DIR, name)}.ndjson (${rows.length} rows)`);
+    // Evidence write is BEST-EFFORT and must not jump the cleanup queue
+    // (round-10 C-005): a throw here (EACCES/ENOSPC on out/) used to
+    // propagate out of the finally and skip browser.close() AND the
+    // delay-knob restore — leaking Chromium and leaving DELAY_AUTH_MS set,
+    // the exact leftover the SIGINT handler and knobOk exist to prevent.
+    // Cleanup order: flush evidence (guarded) -> close browser -> restore
+    // the shared knob -> then compute the verdict.
+    try {
+      mkdirSync(OUT_DIR, { recursive: true });
+      writeFileSync(
+        path.join(OUT_DIR, `${name}.ndjson`),
+        rows.map((r) => JSON.stringify(r)).join("\n") + "\n",
+      );
+      console.log(`ndjson: ${path.join(OUT_DIR, name)}.ndjson (${rows.length} rows)`);
+    } catch (e) {
+      console.error(`FAIL evidence write (continuing cleanup): ${e.message ?? e}`);
+      pass = false; // a run whose evidence could not be recorded is not a PASS
+    }
     if (browser) await browser.close().catch(() => {});
     // Restore unconditionally (every scenario's expected resting state is 0,
     // including the delayMs:null rows that normalized a leftover away).

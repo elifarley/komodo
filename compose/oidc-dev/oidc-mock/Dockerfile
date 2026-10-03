@@ -10,6 +10,6 @@ WORKDIR /app
 COPY oidc-mock/package.json oidc-mock/yarn.lock ./
 RUN yarn install --frozen-lockfile
 COPY oidc-mock/index.mjs ./
-ENV MOCK_ISSUER=https://portal.oidctest.localhost
+ENV MOCK_ISSUER=https://portal.oidctest.localhost:8443
 EXPOSE 3344
 CMD ["yarn", "start"]
