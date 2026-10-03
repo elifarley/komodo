@@ -5,10 +5,15 @@ import { MoghAuth } from "komodo_client";
 // Redeem lifecycle. "idle" means OPEN everywhere: only a document
 // that itself arms the redeem mutation can leave idle, so every gate keyed on
 // `!== "pending"` behaves exactly like today on normal page loads.
-// Delivery fact (react-query internals): cache listeners run synchronously inside the
-// dispatch's task — a render-phase dispatch notifies zero effect-scoped
-// subscribers, deterministically. Arming uses the config hooks, which run
-// inside execute regardless.
+// Delivery fact (react-query internals, verified against the pinned
+// query-core 5.102.4): MutationCache listeners run SYNCHRONOUSLY inside the
+// dispatch's task — mutationCache.notify invokes this.listeners.forEach
+// directly inside notifyManager.batch, and batch runs its callback
+// immediately; the systemSetTimeoutZero scheduler delivers only the
+// notifyManager's observer-notification QUEUE (schedule/batchCalls), which
+// cache listeners never touch. A render-phase dispatch notifies zero
+// effect-scoped subscribers, deterministically. Arming uses the config
+// hooks, which run inside execute regardless.
 export type RedeemState = "idle" | "pending" | "settled-ok" | "settled-failed";
 
 const REDEEM_KEY = "ExchangeForJwt";

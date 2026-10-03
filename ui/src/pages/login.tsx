@@ -70,9 +70,13 @@ export default function Login(props: {
     // the URL itself so every consumer (mogh_ui's included) sees only a
     // local path. replaceState: no navigation, LoginPage unaffected.
     const rawBackto = new URLSearchParams(window.location.search).get("backto");
-    if (rawBackto !== null && safeLocalPath(rawBackto) !== rawBackto) {
+    // Compute the guard ONCE and write its answer: safeLocalPath is this
+    // file's security seam, and two invocations are two chances for a future
+    // edit to make "what was approved" and "what was written" diverge.
+    const sanitizedBackto = rawBackto === null ? null : safeLocalPath(rawBackto);
+    if (sanitizedBackto !== null && sanitizedBackto !== rawBackto) {
       const url = new URL(window.location.href);
-      url.searchParams.set("backto", safeLocalPath(rawBackto));
+      url.searchParams.set("backto", sanitizedBackto);
       window.history.replaceState(null, "", url.pathname + url.search);
     }
     const flag = readRedeemFlag();
