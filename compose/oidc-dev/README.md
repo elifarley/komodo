@@ -312,8 +312,9 @@ plus browser instrumentation, prints per-assertion PASS/FAIL lines, then
 `SCENARIO <name> PASS|FAIL` and exits with the matching code.
 
 ```sh
-# one-time, dev-only HOST install (not committed; see .gitignore):
-cd compose/oidc-dev && npm init -y && npm i playwright && npx playwright install chromium
+# one-time, dev-only HOST install — `npm ci` honors the COMMITTED lockfile
+# (the driver is evidence machinery; its version is pinned, not floating):
+cd compose/oidc-dev && npm ci && npx playwright install chromium
 
 node compose/oidc-dev/verify.mjs success          # exit 0 = PASS
 node compose/oidc-dev/verify.mjs latency          # sets DELAY_AUTH_MS=2000 itself, restores 0

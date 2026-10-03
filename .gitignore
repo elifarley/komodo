@@ -9,8 +9,7 @@ deno.lock
 .dev
 compose/oidc-dev/access.log
 compose/oidc-dev/caddy-root-ca.crt
-# verify.mjs outputs (per-scenario ndjson evidence) + the dev-only host
-# playwright install (see compose/oidc-dev/README.md "Verify suite")
+# verify.mjs outputs (per-scenario ndjson evidence). The playwright driver
+# manifest + lockfile ARE committed (pinned); only the browser binaries stay
+# host-local (~/.cache, installed via `npx playwright install chromium`).
 compose/oidc-dev/out/
-compose/oidc-dev/package.json
-compose/oidc-dev/package-lock.json
