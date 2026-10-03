@@ -62,6 +62,19 @@ export default function Login(props: {
   // and this PR must not add another unguarded call site of a flaw it
   // documents.
   useEffect(() => {
+    // Sanitize backto IN THE URL at mount, before anything reads it. This
+    // page renders mogh_ui's LoginPage, whose own success handler
+    // (maybeNavigate) replaces whatever location.search's backto carries —
+    // unvalidated — after a LOCAL/passkey/totp login. safeLocalPath guards
+    // only this file's own redirect; the hostile value must be removed from
+    // the URL itself so every consumer (mogh_ui's included) sees only a
+    // local path. replaceState: no navigation, LoginPage unaffected.
+    const rawBackto = new URLSearchParams(window.location.search).get("backto");
+    if (rawBackto !== null && safeLocalPath(rawBackto) !== rawBackto) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("backto", safeLocalPath(rawBackto));
+      window.history.replaceState(null, "", url.pathname + url.search);
+    }
     const flag = readRedeemFlag();
     if (!flag) return;
     if (flag.phase === "drop") {
