@@ -555,6 +555,49 @@ same served-hash technique batch 0 used.
 
 **8/8 green.**
 
+## Round-11 batch — 8/8; zero CRITICAL, zero MAJOR, and one roast-vs-roast disagreement settled by the pinned source
+
+Round-11 review found **no production defects**. Four minors:
+
+- **C-001 REFUTED — and the comment strengthened anyway.** The roast claimed
+  the settlement listener is delivered via `systemSetTimeoutZero` (a later
+  macrotask), contradicting an earlier round's receipt — the delivery
+  mechanism decides whether the silent-drop verdict is a react-query
+  guarantee or a browser-scheduling coincidence, so both claims could not
+  stand. Re-verified against the pinned query-core 5.102.4:
+  `mutationCache.notify` invokes `this.listeners.forEach` DIRECTLY inside
+  `notifyManager.batch`, and `batch` runs its callback synchronously
+  (`transactions++` → `callback()` → `transactions--`). The
+  `systemSetTimeoutZero` scheduler delivers only the notifyManager's
+  observer-notification `queue` — filled solely by `schedule()`/`batchCalls`,
+  which cache listeners never touch; `flush()` with an empty queue is a
+  no-op. The comment now names where the scheduler applies and where it does
+  not, so the next reader who greps `notifyManager.cjs` and sees a scheduler
+  does not conclude the cache listeners ride it.
+- **F-002:** the harness pinned everything except its own driver — the host
+  Playwright install was a caret range in a gitignored manifest. Now
+  committed and pinned exact (1.63.0 — the resolved version every canonical
+  batch ran on), lockfile in the repo, README install step is
+  `npm ci && npx playwright install chromium`.
+- **F-003:** `safeLocalPath` computed once in the Login mount effect and its
+  ANSWER written — one invocation, no approval/writer divergence on the
+  security seam.
+- **F-001:** the PR body's "7-scenario" sentence (a stale count) corrected to
+  8 — repo docs were already consistent.
+
+### Batch 6 (canonical — HEAD `7ee624c16`, ~09:47–09:59 -03:00)
+
+`SCENARIO … PASS` ×8 (`success` 7/7, `latency` 8/8, `m1-seeded` 4/4,
+`m2-forced` 5/5, `m2-seeded` 7/7, `exchange-error` 5/5 + 2 pre-fix SKIPs,
+`hung` 5/5 + 1 pre-fix SKIP, `isolation` 3/3), `ALL SCENARIOS PASS`, exit 0;
+all eight ndjson meta rows stamped `head=7ee624c168f7, dirty=0`; 44 checks
+green. Bundle identity verified byte-level: the container's served
+`login-*.js` md5 equals the host `yarn build` output at this head (the
+container also retains the previous build's stale chunk from COPY layering —
+inert; the served index references only the current one).
+
+**8/8 green.**
+
 ## m2-forced — the silent drop now surfaces (M2 closed at the komodo layer)
 
 Pre-fix: upstream 200 with a sub-less jwt → `add_and_change` early-returns on
@@ -952,7 +995,11 @@ fixed in `1f0f2673b0bb`), **4b canonical ~18:29–18:43 -03:00 (HEAD
 `head=1f0f2673b0bb, dirty=0`)**; round-10 batch 5 canonical ~21:20–21:27
 -03:00 (HEAD `9bf2f4a26`, image `c30be6e0dc43`, 8/8, every ndjson meta row
 stamped `head=9bf2f4a26fd7, dirty=0`; served-bundle identity verified by
-md5 against the host build). Harness per README "Run"
+md5 against the host build); round-11 batch 6 canonical ~09:47–09:59
+-03:00 (HEAD `7ee624c16`, 8/8, every ndjson meta row stamped
+`head=7ee624c168f7, dirty=0`; served-bundle md5 verified; the harness's
+own Playwright driver now pinned 1.63.0 with a committed lockfile).
+Harness per README "Run"
 (podman shim, `compose/oidc-dev.compose.yaml`, `oidc-provider@9.12.2`); raw
 ndjson evidence in gitignored `compose/oidc-dev/out/` (batch 3b files are
 the surviving evidence for all seven rows); run stdout
