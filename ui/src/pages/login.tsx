@@ -9,7 +9,7 @@ import {
   readRedeemFlag,
 } from "@/lib/redeem-gate";
 
-// Origin guard for the late-success redirect target (round-8 C-001). backto
+// Origin guard for the late-success redirect target. backto
 // survives mogh_ui's post-exchange sanitize (utils.js strips only
 // redeem_ready|totp|passkey), so a crafted link —
 // /login?backto=//evil.example&redeem_ready=true — would otherwise navigate
@@ -58,24 +58,23 @@ export default function Login(props: {
   // <BrowserRouter> mounts, where router-context hooks throw. Reading
   // location.search and redirecting via location.replace mirrors mogh_ui's
   // own maybeNavigate — but the target guard below deliberately DIVERGES:
-  // mogh_ui's maybeNavigate replaces whatever backto carries (upstream draft
-  // (f) in compose/oidc-dev/BASELINE.md), and this PR must not add another
-  // unguarded call site of a flaw it documents.
+  // mogh_ui's maybeNavigate replaces whatever backto carries, unvalidated,
+  // and this PR must not add another unguarded call site of a flaw it
+  // documents.
   useEffect(() => {
     const flag = readRedeemFlag();
     if (!flag) return;
     if (flag.phase === "drop") {
-      // NO clear-on-read (batch-3 lesson): this document may be the DOOMED
-      // pre-reload one — mogh's sanitize reload was already initiated when
-      // the settlement wrote the flag, and this page can mount (RequireAuth
-      // bounces a session-less settled document to /login) and consume the
-      // flag milliseconds before the unload commits. Batch 3's first
-      // m2-forced run failed exactly here: the dying document consumed the
-      // drop signal, and the document the user actually landed in found
-      // nothing. The ok branch still consumes BEFORE navigating, because
-      // THAT redirect would otherwise loop; the drop path has no redirect to
-      // loop, so TTL expiry is the cleanup. Freshness gates the toast so a
-      // stale flag cannot replay it on later /login visits.
+      // NO clear-on-read: this document may be the DOOMED pre-reload one —
+      // mogh's sanitize reload was already initiated when the settlement
+      // wrote the flag, and this page can mount (RequireAuth bounces a
+      // session-less settled document to /login) and consume the flag
+      // milliseconds before the unload commits, destroying the signal for
+      // the document the user actually lands in. The ok branch still
+      // consumes BEFORE navigating, because THAT redirect would otherwise
+      // loop; the drop path has no redirect to loop, so TTL expiry is the
+      // cleanup. Freshness gates the toast so a stale flag cannot replay it
+      // on later /login visits.
       if (!flagFresh(flag)) return;
       if (!dropNoticeShown) {
         dropNoticeShown = true;
@@ -100,8 +99,8 @@ export default function Login(props: {
     // ever written when the exchange 200'd (cache onSuccess), and a silent
     // drop overwrites it to "drop" in the same dispatch task — so a fresh ok
     // flag certifies the exchanged token itself landed, and the redirect
-    // never depended on failure-path store clearing (round-8 C-003 removed
-    // it). Absent/corrupt store -> false -> no redirect.
+    // never depended on failure-path store clearing (failure paths are
+    // store-neutral). Absent/corrupt store -> false -> no redirect.
     if (hasStoredJwt()) {
       // Consume BEFORE navigating: the next document finds no flag, so the
       // redirect cannot loop — including across StrictMode's double effect.

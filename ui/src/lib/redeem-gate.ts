@@ -20,9 +20,11 @@ const WATCHDOG_MS = 12_000;
 // measures from the last confirmed settlement, not the original arm.
 const FLAG_TTL_MS = 15_000;
 const FLAG_KEY = "komodo-redeem";
-// Exported as the documented seam (upstream draft (b) cites it); every read
-// of the key goes through readMoghStore() below — one parse, one source of
-// truth for the mogh storage key.
+// Exported as the documented seam; every read of the key goes through
+// readMoghStore() below — one parse, one source of truth for the mogh
+// storage key. (Hosts must read storage directly: mogh_auth_client's IIFE
+// snapshots localStorage once at module init and never re-syncs, so its
+// closure view is not trustworthy mid-session.)
 export const MOGH_TOKENS_KEY = "mogh-auth-tokens-v1"; // mogh_auth_client 1.7.1 tokens.js:5
 
 let state: RedeemState = "idle";
@@ -50,7 +52,7 @@ function setState(next: RedeemState) {
   // it could trigger: listeners fire and React re-renders with the settled
   // state in the same task.
   //
-  // Store hygiene is deliberately failure-NEUTRAL (round-8 C-003). An earlier
+  // Store hygiene is deliberately failure-NEUTRAL. An earlier
   // revision ran LOGIN_TOKENS.remove_all() here; that emptied the
   // profile-wide store on EVERY failure path — watchdog on a black-holed
   // proxy, a replayed ?redeem_ready=true link, a spent one-shot session —
@@ -89,7 +91,7 @@ function safe<T>(fn: () => T, label: string): T | undefined {
 // undefined; on a parse failure a redacted fingerprint (length + 8-char head
 // — NEVER the raw value, which can carry every stored jwt tail) is logged
 // with the key named, so support can identify the corruption class without
-// credentials riding in a pasted log (round-8 F-002).
+// credentials riding in a pasted log.
 type MoghTokenStore = {
   current?: string;
   tokens?: Array<{ user_id: string; jwt: string }>;
@@ -274,9 +276,9 @@ export function initRedeemGate(client: QueryClient) {
         //     (add_and_change swallowed the token; nothing was written
         //     anywhere)                                        -> "drop"
         //  2. store holds a PRE-EXISTING session, closure = that OLD token
-        //     (round-9 C-003: the round-7 check used mere truthiness here,
-        //     which misread this population as drift — a dropped exchange
-        //     in a logged-in document went completely silent)  -> "drop"
+        //     (a truthiness check here would misread this population as
+        //     drift — a dropped exchange in a logged-in document would go
+        //     completely silent)                                  -> "drop"
         //  3. closure === THE EXCHANGED jwt while the pinned key lacks it —
         //     the library wrote SOMEWHERE ELSE (upstream key/schema rename
         //     under ^1.7.1); our absence reading is stale by construction

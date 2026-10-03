@@ -68,9 +68,9 @@ export const Router = () => {
 
   useEffect(() => {
     if (redeemState !== "settled-failed") return;
-    // NOTE: failure paths never mutate the token store (round-8 C-003 — the
-    // earlier remove_all hygiene was removed entirely: a failed redeem must
-    // not wipe a pre-existing valid session). This effect is UI convergence
+    // NOTE: failure paths never mutate the token store (the earlier
+    // remove_all hygiene was removed entirely: a failed redeem must not
+    // wipe a pre-existing valid session). This effect is UI convergence
     // only: URL strip + notification. redeem-gate.ts owns the full rationale.
     const url = new URL(window.location.href);
     for (const p of ["redeem_ready", "totp", "passkey"])
@@ -82,8 +82,8 @@ export const Router = () => {
         title: "Login didn't complete",
         // Wording stays true on BOTH end states: with no surviving session
         // this lands on /login; with a valid pre-existing session the app
-        // renders right here (failure paths are store-neutral, round-8
-        // C-003) — never claim a destination.
+        // renders right here (failure paths are store-neutral) — never
+        // claim a destination.
         message: "The login attempt didn't complete — please try again.",
         color: "red",
       });
